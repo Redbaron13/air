@@ -11,6 +11,32 @@ DB_DSN = os.getenv("DATABASE_URL", "postgresql://bam_admin:bam_secure_super_pass
 def get_db():
     return psycopg2.connect(DB_DSN, cursor_factory=RealDictCursor)
 
+SUPPORTED_EXTENSIONS = (
+    ".png", ".jpg", ".jpeg", ".webp", ".avif", ".heic", ".dng",
+    ".mp4", ".mov", ".glb", ".gltf", ".obj", ".usdz"
+)
+
+def iter_ingest_targets(path: str) -> list[str]:
+    if os.path.isfile(path):
+        return [path] if path.lower().endswith(SUPPORTED_EXTENSIONS) else []
+
+    if not os.path.isdir(path):
+        return []
+
+    targets = []
+    for root, _, files in os.walk(path):
+        for name in sorted(files):
+            if name.lower().endswith(SUPPORTED_EXTENSIONS):
+                targets.append(os.path.join(root, name))
+    return targets
+
+def build_asset_identifiers(file_hash: str, batch_id: str = "A01", now: datetime | None = None) -> tuple[str, str]:
+    timestamp = now or datetime.now()
+    unique_stem = file_hash[:8].upper()
+    date_stem = timestamp.strftime("%d%m%y")
+    asset_id = f"{date_stem}-001BAMPHO{batch_id}-{unique_stem}"
+    return unique_stem, asset_id
+
 def compute_sha256(filepath: str) -> str:
     hasher = hashlib.sha256()
     with open(filepath, "rb") as f:
@@ -47,9 +73,7 @@ def ingest_file(filepath: str, batch_id="A01"):
                 return None
 
             meta = extract_exif(filepath)
-            unique4 = file_hash[:4].upper()
-            date_stem = datetime.now().strftime("%d%m%y")
-            asset_id = f"{date_stem}-001BAMPHO{batch_id}-{unique4}"
+            unique_stem, asset_id = build_asset_identifiers(file_hash, batch_id=batch_id)
 
             cur.execute("""
                 INSERT INTO assets (
@@ -59,7 +83,7 @@ def ingest_file(filepath: str, batch_id="A01"):
                     workflow_state
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'INGESTED')
             """, (
-                asset_id, unique4, os.path.basename(filepath), filepath,
+                asset_id, unique_stem, os.path.basename(filepath), filepath,
                 file_hash, "still", meta.get("captured_at"), meta.get("sensor"),
                 meta.get("focal_length"), meta.get("gimbal_pitch"),
                 meta.get("lat"), meta.get("lon"), meta.get("alt")
@@ -71,4 +95,8 @@ def ingest_file(filepath: str, batch_id="A01"):
 if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1:
-        ingest_file(sys.argv[1])
+        targets = iter_ingest_targets(sys.argv[1])
+        if not targets:
+            print(f"[SKIP] No supported media files found for: {sys.argv[1]}")
+        for target in targets:
+            ingest_file(target)
