@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <title>BAM Media Factory - Mission Control</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 h-screen flex flex-col p-4 overflow-hidden">
+  
+  <!-- Header -->
+  <header class="flex justify-between items-end border-b border-slate-800 pb-2 mb-4">
+    <h1 class="text-emerald-400 font-bold text-xl tracking-wider">BAM MEDIA FACTORY // MISSION CONTROL</h1>
+    <div id="queue-status" class="text-slate-400 text-sm font-mono">Queue: 0</div>
+  </header>
+
+  <!-- VRAM Control Panel & Batch Runner -->
+  <div class="flex items-center justify-between bg-slate-900 border border-slate-800 rounded p-3 mb-4 text-sm shadow-lg">
+    <div class="flex items-center gap-6">
+      <span class="text-slate-500 font-bold tracking-widest uppercase text-xs">VRAM Controls:</span>
+      
+      <label class="flex items-center space-x-2 cursor-pointer">
+        <input type="checkbox" class="sr-only peer" onchange="toggleModel('moondream', this)">
+        <div class="w-9 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500 relative"></div>
+        <span class="text-slate-300">Moondream</span>
+      </label>
+
+      <label class="flex items-center space-x-2 cursor-pointer">
+        <input type="checkbox" class="sr-only peer" onchange="toggleModel('llava', this)">
+        <div class="w-9 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500 relative"></div>
+        <span class="text-slate-300">LLaVA</span>
+      </label>
+
+      <label class="flex items-center space-x-2 cursor-pointer">
+        <input type="checkbox" class="sr-only peer" onchange="toggleModel('llama3.1', this)">
+        <div class="w-9 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500 relative"></div>
+        <span class="text-slate-300">Llama 3.1</span>
+      </label>
+    </div>
+    
+    <button onclick="runOrchestrator(this)" class="bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold px-4 py-1.5 rounded text-xs tracking-wider uppercase transition flex items-center gap-2 shadow">
+      <svg class="w-3 h-3 fill-current" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+      Run Batch
+    </button>
+  </div>
+
+  <!-- Main Layout: 3 Columns (Staging Queue, AI Review Board, Terminal Stream) -->
+  <main class="grid grid-cols-4 gap-4 flex-1 overflow-hidden">
+    
+    <!-- Column 1: Raw Files Staging Queue -->
+    <div class="col-span-1 bg-black border border-slate-800 p-4 rounded flex flex-col overflow-hidden shadow-inner">
+      <div class="flex justify-between items-center mb-3 pb-2 border-b border-slate-800">
+        <h3 class="text-slate-500 uppercase font-bold text-xs tracking-wider">Raw Files (Staged)</h3>
+        <button onclick="ingestSelected(this)" class="bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold px-2 py-1 rounded uppercase tracking-wider transition shadow">
+          Ingest Selected
+        </button>
+      </div>
+      
+      <label class="flex items-center gap-2 text-xs text-slate-400 mb-3 cursor-pointer">
+        <input type="checkbox" onchange="toggleAllStaged(this)" class="rounded bg-slate-800 border-slate-700 text-emerald-500 focus:ring-0">
+        <span class="font-bold">Select All Files</span>
+      </label>
+
+      <div id="staging-list" class="flex-1 overflow-auto space-y-3 pr-2 font-mono">
+        <div class="text-xs text-slate-500 italic">Scanning storage...</div>
+      </div>
+    </div>
+
+    <!-- Columns 2 & 3: AI Review Board -->
+    <div class="col-span-2 bg-slate-900 border border-slate-800 p-4 rounded overflow-auto flex flex-col shadow-xl">
+      
+      <!-- Header with Asset ID, Approve Button & Score Badge -->
+      <div class="flex justify-between items-center mb-3 pb-2 border-b border-slate-800">
+        <div class="flex items-center gap-3">
+          <h2 class="text-emerald-400 font-bold text-base font-mono" id="asset-id">No Asset</h2>
+          <button onclick="approveAsset()" class="bg-emerald-600 hover:bg-emerald-500 text-slate-950 px-3 py-1 rounded text-[10px] font-bold uppercase tracking-wider transition shadow">
+            Approve & Next
+          </button>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="text-xs text-slate-500 uppercase font-bold tracking-wider">AI Agreement:</span>
+          <span id="ai-score" class="px-3 py-1 rounded font-bold text-sm bg-slate-800 text-slate-400 border border-slate-700">--%</span>
+        </div>
+      </div>
+
+     <!-- Expanded Telemetry Metadata Bar -->
+      <div class="grid grid-cols-4 gap-2 mb-3 text-[10px] uppercase font-bold text-slate-400 bg-black p-2.5 rounded border border-slate-800 font-mono">
+        <div>📷 <span id="meta-sensor" class="text-slate-200">Sensor: N/A</span></div>
+        <div>🔭 <span id="meta-focal" class="text-slate-200">Focal: N/A</span></div>
+        <div>📐 <span id="meta-pitch" class="text-slate-200">Pitch: N/A</span></div>
+        <div>✈️ <span id="meta-alt" class="text-slate-200">Alt: N/A</span></div>
+        <div class="col-span-2">📍 Lat: <span id="meta-lat" class="text-slate-200">N/A</span></div>
+        <div class="col-span-2">📍 Lon: <span id="meta-lon" class="text-slate-200">N/A</span></div>
+      </div>
+
+      <!-- Screener & Verifier Grid -->
+      <div class="grid grid-cols-2 gap-2 mb-2 flex-1">
+        <div class="flex flex-col">
+          <h3 class="text-[10px] uppercase text-slate-500 font-bold mb-1">Phase 1A: Screener (Moondream)</h3>
+          <pre id="screener-json" class="text-[11px] text-slate-300 bg-black p-2 rounded border border-slate-800 flex-1 overflow-auto whitespace-pre-wrap font-mono">Waiting...</pre>
+        </div>
+        <div class="flex flex-col">
+          <h3 class="text-[10px] uppercase text-slate-500 font-bold mb-1">Phase 1B: Verifier (LLaVA)</h3>
+          <pre id="verifier-json" class="text-[11px] text-slate-300 bg-black p-2 rounded border border-slate-800 flex-1 overflow-auto whitespace-pre-wrap font-mono">Waiting...</pre>
+        </div>
+      </div>
+      
+      <!-- Final Judge Box -->
+      <div>
+        <h3 class="text-[10px] uppercase text-slate-500 font-bold mb-1 mt-1">Phase 1C: Final Judge (Llama 3.1)</h3>
+        <pre id="judge-json" class="text-[11px] text-emerald-300 bg-black p-2 rounded border border-slate-800 h-28 overflow-auto whitespace-pre-wrap font-mono">Waiting...</pre>
+      </div>
+
+    </div>
+
+    <!-- Column 4: Logging Terminal Stream -->
+    <div class="col-span-1 bg-black border border-slate-800 p-4 rounded flex flex-col shadow-inner">
+      <h3 class="text-slate-500 uppercase font-bold text-xs mb-2 tracking-wider">Pipeline Log Stream</h3>
+      <div id="terminal" class="flex-1 text-[11px] text-emerald-400 overflow-auto font-mono leading-relaxed space-y-1"></div>
+    </div>
+
+  </main>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>
