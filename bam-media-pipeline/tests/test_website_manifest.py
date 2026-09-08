@@ -2,6 +2,10 @@ import copy
 import importlib.util
 import json
 import tempfile
+import io
+import hashlib
+from email.message import Message
+from unittest.mock import patch
 import unittest
 from pathlib import Path
 
@@ -39,5 +43,31 @@ class WebsiteExportTests(unittest.TestCase):
     def test_atomic_export(self):
         with tempfile.TemporaryDirectory() as folder:
             path=Path(folder)/'manifest.json';path.write_text('old');export.atomic_write(path,self.build());self.assertEqual(json.loads(path.read_text())['version'],1);self.assertEqual(len(list(Path(folder).iterdir())),1)
+
+    def test_remote_verification_checks_actual_bytes_and_cors(self):
+        content=b'synthetic webp bytes'
+        self.variant.update(byte_size=len(content),sha256=hashlib.sha256(content).hexdigest())
+        manifest=self.build()
+        class Response(io.BytesIO):
+            status=200
+            headers=Message()
+        Response.headers['Content-Type']='image/webp'
+        Response.headers['Access-Control-Allow-Origin']='https://baronaerial.com'
+        with patch.object(export,'build_opener') as opener:
+            opener.return_value.open.return_value=Response(content)
+            export.verify_remote(manifest)
+        self.assertEqual(manifest['publication']['status'],'verified')
+        self.assertIn('verifiedAt',manifest['publication'])
+    def test_remote_mismatch_keeps_manifest_staged(self):
+        class Response(io.BytesIO):
+            status=200
+            headers=Message()
+        Response.headers['Content-Type']='image/webp'
+        Response.headers['Access-Control-Allow-Origin']='*'
+        manifest=self.build()
+        with patch.object(export,'build_opener') as opener:
+            opener.return_value.open.return_value=Response(b'wrong')
+            with self.assertRaisesRegex(ValueError,'byte count'):export.verify_remote(manifest)
+        self.assertEqual(manifest['publication']['status'],'staged')
 
 if __name__=='__main__':unittest.main()
