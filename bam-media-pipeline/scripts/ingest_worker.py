@@ -8,6 +8,11 @@ from psycopg2.extras import RealDictCursor
 
 DB_DSN = os.getenv("DATABASE_URL", "postgresql://bam_admin:bam_secure_super_password_2026@postgres:5432/bam_media_factory")
 
+MEDIA_EXT = {
+    ".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".heic", ".dng",
+    ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".glb", ".gltf", ".obj", ".usdz",
+}
+
 def get_db():
     return psycopg2.connect(DB_DSN, cursor_factory=RealDictCursor)
 
@@ -25,22 +30,29 @@ def extract_exif(filepath: str) -> dict:
         data = json.loads(res.stdout)[0]
         return {
             "captured_at": data.get("DateTimeOriginal", datetime.utcnow().isoformat()),
-            "lat": float(data.get("GPSLatitude", 0.0)),
-            "lon": float(data.get("GPSLongitude", 0.0)),
-            "alt": float(data.get("GPSAltitude", 0.0)),
+            "lat": float(data.get("GPSLatitude", 0.0) or 0.0),
+            "lon": float(data.get("GPSLongitude", 0.0) or 0.0),
+            "alt": float(data.get("GPSAltitude", 0.0) or 0.0),
             "sensor": data.get("Model", "Unknown"),
             "focal_length": data.get("FocalLength", "Unknown"),
-            "gimbal_pitch": float(data.get("GimbalPitchDegree", 0.0)),
+            "gimbal_pitch": float(data.get("GimbalPitchDegree", 0.0) or 0.0),
         }
     except Exception:
         return {}
 
+def kind_for(filepath: str) -> str:
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext in {".mp4", ".mov", ".m4v", ".avi", ".mkv"}:
+        return "video"
+    if ext in {".glb", ".gltf", ".obj", ".usdz"}:
+        return "3d_model"
+    return "still"
+
 def ingest_file(filepath: str, batch_id="A01"):
     file_hash = compute_sha256(filepath)
-    
+
     with get_db() as conn:
         with conn.cursor() as cur:
-            # Deduplication Check
             cur.execute("SELECT asset_id FROM assets WHERE original_sha256 = %s", (file_hash,))
             if cur.fetchone():
                 print(f"[DEDUP] Duplicate discarded: {filepath}")
@@ -54,13 +66,13 @@ def ingest_file(filepath: str, batch_id="A01"):
             cur.execute("""
                 INSERT INTO assets (
                     asset_id, unique_stem, original_filename, source_path,
-                    original_sha256, media_kind, captured_at, sensor_model, 
+                    original_sha256, media_kind, captured_at, sensor_model,
                     focal_length, gimbal_pitch, latitude, longitude, altitude_meters,
                     workflow_state
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'INGESTED')
             """, (
                 asset_id, unique4, os.path.basename(filepath), filepath,
-                file_hash, "still", meta.get("captured_at"), meta.get("sensor"),
+                file_hash, kind_for(filepath), meta.get("captured_at"), meta.get("sensor"),
                 meta.get("focal_length"), meta.get("gimbal_pitch"),
                 meta.get("lat"), meta.get("lon"), meta.get("alt")
             ))
@@ -68,7 +80,19 @@ def ingest_file(filepath: str, batch_id="A01"):
             print(f"[INGESTED] Asset staged: {asset_id}")
             return asset_id
 
+def iter_media(root: str):
+    if os.path.isfile(root):
+        yield root
+        return
+    for dirpath, _dirs, files in os.walk(root):
+        for name in files:
+            if os.path.splitext(name)[1].lower() in MEDIA_EXT:
+                yield os.path.join(dirpath, name)
+
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) > 1:
-        ingest_file(sys.argv[1])
+    if len(sys.argv) < 2:
+        raise SystemExit("usage: ingest_worker.py <file-or-folder> [more paths...]")
+    for target in sys.argv[1:]:
+        for media in iter_media(target):
+            ingest_file(media)

@@ -1,5 +1,4 @@
 services:
-  # 1. Relational System of Record
   postgres:
     image: postgres:16-alpine
     container_name: bam-postgres
@@ -14,7 +13,6 @@ services:
       - pg_data:/var/lib/postgresql/data
       - ./sql/init_schema.sql:/docker-entrypoint-initdb.d/init_schema.sql
 
-  # 2. Real-Time Event Broker
   redis:
     image: redis:7-alpine
     container_name: bam-redis
@@ -24,7 +22,6 @@ services:
     volumes:
       - redis_data:/data
 
-  # 3. FastAPI Server & Vision Orchestrator (Python)
   api-server:
     build:
       context: ./server
@@ -39,28 +36,28 @@ services:
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=${REDIS_URL}
-      - OLLAMA_URL=${OLLAMA_URL}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT:-}
-      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY:-}
+      - OLLAMA_URL=
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
       - AZURE_OPENAI_DEPLOYMENT=${AZURE_OPENAI_DEPLOYMENT:-gpt-4o}
       - AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION:-2024-08-01-preview}
-      - BAM_VISION_BACKEND=${BAM_VISION_BACKEND:-auto}
+      - BAM_VISION_BACKEND=azure
       - BAM_VISION_MAX_EDGE=${BAM_VISION_MAX_EDGE:-1600}
+      - BAM_VISION_LIMIT=${BAM_VISION_LIMIT:-180}
     extra_hosts:
-      - "host.docker.internal:host-gateway" # CRITICAL: Allows Docker to talk to Mac Native Ollama
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./server:/app/server
       - ./scripts:/app/scripts
       - ./static:/app/static
-      - ${ONEDRIVE_SOURCE_PATH}:/storage/onedrive_mount:ro # Read-only safety guard
+      - ${ONEDRIVE_SOURCE_PATH}:/storage/onedrive_mount:ro
       - ${PIPELINE_STORAGE_PATH}/active:/storage/active
       - ${PIPELINE_STORAGE_PATH}/originals:/storage/originals
       - ${PIPELINE_STORAGE_PATH}/exports:/storage/exports
     command: uvicorn server.app:app --host 0.0.0.0 --port 3080 --reload
 
-  # 4. Derivative Builder (Node.js + Sharp + FFmpeg)
   derivative-worker:
     build:
       context: ./scripts
