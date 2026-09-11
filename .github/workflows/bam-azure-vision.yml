@@ -1,0 +1,24 @@
+name: BAM Azure vision slice
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: Assets to process this slice
+        required: false
+        default: "180"
+  schedule:
+    - cron: "0 12 * * *"
+
+jobs:
+  vision-slice:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run containerized Azure batch
+        working-directory: bam-media-pipeline
+        env:
+          BAM_VISION_LIMIT: ${{ github.event.inputs.limit || '180' }}
+        run: |
+          chmod +x scripts/run_azure_batch.sh
+          ./scripts/run_azure_batch.sh
