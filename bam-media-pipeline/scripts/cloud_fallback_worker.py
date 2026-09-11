@@ -1,29 +1,8 @@
 #!/usr/bin/env python3
-"""One-pass cloud vision worker for BAM assets already in Postgres.
-
-Replaces the local Moondream + LLaVA + Llama 3.1 loop with a single
-structured call to Azure OpenAI, OpenAI, or Anthropic.
+"""One-pass Azure (or OpenAI/Anthropic) vision worker for BAM assets.
 
 Reads assets WHERE workflow_state = 'INGESTED'.
-Writes ai_evaluations + assets.alt / describes / service_tags.
-Sets workflow_state = 'PENDING_HUMAN' so the existing review UI works.
-
-Env (first match wins unless BAM_VISION_BACKEND is set):
-  BAM_VISION_BACKEND=azure|openai|anthropic|auto
-
-  AZURE_OPENAI_ENDPOINT
-  AZURE_OPENAI_API_KEY
-  AZURE_OPENAI_DEPLOYMENT   (default gpt-4o)
-  AZURE_OPENAI_API_VERSION  (default 2024-08-01-preview)
-
-  OPENAI_API_KEY
-  OPENAI_MODEL              (default gpt-4o)
-
-  ANTHROPIC_API_KEY
-  ANTHROPIC_MODEL           (default claude-sonnet-4-5)
-
-  DATABASE_URL
-  BAM_VISION_MAX_EDGE       (default 1600)
+Optional BAM_VISION_LIMIT caps a slice for multi-day batches.
 """
 
 from __future__ import annotations
@@ -43,6 +22,7 @@ from psycopg2.extras import Json, RealDictCursor
 
 DB_DSN = os.getenv("DATABASE_URL")
 MAX_EDGE = int(os.getenv("BAM_VISION_MAX_EDGE", "1600"))
+LIMIT = int(os.getenv("BAM_VISION_LIMIT", "0") or "0")
 STILL_EXT = {
     ".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".heic", ".dng",
 }
@@ -83,7 +63,7 @@ def log(msg: str) -> None:
 
 
 def detect_backend() -> str:
-    forced = os.getenv("BAM_VISION_BACKEND", "auto").strip().lower()
+    forced = os.getenv("BAM_VISION_BACKEND", "azure").strip().lower()
     if forced in {"azure", "openai", "anthropic"}:
         return forced
     if os.getenv("AZURE_OPENAI_ENDPOINT") and (
@@ -96,7 +76,7 @@ def detect_backend() -> str:
         return "anthropic"
     raise SystemExit(
         "No cloud vision backend configured. Set AZURE_OPENAI_ENDPOINT + "
-        "AZURE_OPENAI_API_KEY, or OPENAI_API_KEY, or ANTHROPIC_API_KEY."
+        "AZURE_OPENAI_API_KEY."
     )
 
 
@@ -129,36 +109,27 @@ def extract_video_keyframes(src: Path, work: Path) -> List[Path]:
     frames: List[Path] = []
     for idx, stamp in enumerate(("10%", "50%", "90%")):
         out = work / f"{src.stem}_k{idx}.jpg"
+        probe = subprocess.run(
+            [
+                shutil.which("ffprobe") or ffmpeg,
+                "-v", "error", "-show_entries", "format=duration",
+                "-of", "csv=p=0", str(src),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        try:
+            dur = float(probe.stdout.strip() or "0")
+        except ValueError:
+            dur = 0.0
+        frac = int(stamp[:-1]) / 100.0
+        t = max(0.1, dur * frac) if dur > 0 else 1.0 + idx
         cmd = [
-            ffmpeg, "-y", "-i", str(src),
-            "-ss", stamp if stamp[0].isdigit() else "00:00:01",
+            ffmpeg, "-y", "-ss", f"{t:.2f}", "-i", str(src),
             "-vframes", "1",
             "-vf", f"scale='min({MAX_EDGE},iw)':-2",
             str(out),
         ]
-        # Percent seeks are unreliable; use duration fractions instead.
-        if stamp.endswith("%"):
-            probe = subprocess.run(
-                [
-                    shutil.which("ffprobe") or ffmpeg,
-                    "-v", "error", "-show_entries", "format=duration",
-                    "-of", "csv=p=0", str(src),
-                ],
-                capture_output=True,
-                text=True,
-            )
-            try:
-                dur = float(probe.stdout.strip() or "0")
-            except ValueError:
-                dur = 0.0
-            frac = int(stamp[:-1]) / 100.0
-            t = max(0.1, dur * frac) if dur > 0 else 1.0 + idx
-            cmd = [
-                ffmpeg, "-y", "-ss", f"{t:.2f}", "-i", str(src),
-                "-vframes", "1",
-                "-vf", f"scale='min({MAX_EDGE},iw)':-2",
-                str(out),
-            ]
         subprocess.run(cmd, capture_output=True, text=True)
         if out.is_file() and out.stat().st_size > 0:
             frames.append(out)
@@ -289,29 +260,6 @@ def analyze_images(images: List[Path], asset: Dict[str, Any], backend: str) -> D
     return call_anthropic(images, prompt)
 
 
-def merge_frame_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
-    if not results:
-        return {}
-    if len(results) == 1:
-        return results[0]
-    merged = dict(results[0])
-    tags: List[str] = []
-    subjects: List[str] = []
-    for row in results:
-        tags.extend(row.get("service_tags") or [])
-        subjects.extend(row.get("primary_subjects") or [])
-    merged["service_tags"] = sorted(set(str(t) for t in tags))
-    merged["primary_subjects"] = sorted(set(str(t) for t in subjects))
-    if any(r.get("photogrammetry_value") == "ready" for r in results):
-        merged["photogrammetry_value"] = "ready"
-    elif any(r.get("photogrammetry_value") == "candidate" for r in results):
-        merged["photogrammetry_value"] = "candidate"
-    summaries = [r.get("comprehensive_summary") for r in results if r.get("comprehensive_summary")]
-    if summaries:
-        merged["comprehensive_summary"] = " ".join(summaries[:2])
-    return merged
-
-
 def prepare_inputs(asset: Dict[str, Any], work: Path) -> List[Path]:
     src = Path(asset["source_path"])
     if not src.is_file():
@@ -349,7 +297,7 @@ def split_for_ui(deep: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any], 
         "photogrammetry_value": deep.get("photogrammetry_value"),
     }
     judge = {
-        "reasoning": "Single cloud vision pass; no local model disagreement.",
+        "reasoning": "Single Azure vision pass; local Ollama models were not used.",
         "agreementScore": 1.0 if deep else 0.0,
         "backend": detect_backend(),
     }
@@ -360,11 +308,28 @@ def run_batch() -> int:
     if not DB_DSN:
         raise SystemExit("DATABASE_URL is required")
     backend = detect_backend()
-    log(f"[CLOUD] backend={backend} max_edge={MAX_EDGE}")
+    log(f"[CLOUD] backend={backend} max_edge={MAX_EDGE} limit={LIMIT or 'all'}")
 
     conn = psycopg2.connect(DB_DSN, cursor_factory=RealDictCursor)
     cur = conn.cursor()
-    cur.execute("SELECT * FROM assets WHERE workflow_state = 'INGESTED' ORDER BY created_at ASC")
+    if LIMIT > 0:
+        cur.execute(
+            """
+            SELECT * FROM assets
+             WHERE workflow_state = 'INGESTED'
+             ORDER BY created_at ASC
+             LIMIT %s
+            """,
+            (LIMIT,),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT * FROM assets
+             WHERE workflow_state = 'INGESTED'
+             ORDER BY created_at ASC
+            """
+        )
     assets = cur.fetchall()
     if not assets:
         log("No INGESTED assets.")
