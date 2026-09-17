@@ -1,0 +1,79 @@
+services:
+  # 1. Relational System of Record
+  postgres:
+    image: postgres:16-alpine
+    container_name: bam-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./sql/init_schema.sql:/docker-entrypoint-initdb.d/init_schema.sql
+
+  # 2. Real-Time Event Broker
+  redis:
+    image: redis:7-alpine
+    container_name: bam-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # 3. FastAPI Server & Vision Orchestrator (Python)
+  api-server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: bam-api-server
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "3080:3080"
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - OLLAMA_URL=${OLLAMA_URL}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # CRITICAL: Allows Docker to talk to Mac Native Ollama
+    volumes:
+      - ./server:/app/server
+      - ./scripts:/app/scripts
+      - ./static:/app/static
+      - ${ONEDRIVE_SOURCE_PATH}:/storage/onedrive_mount:ro # Read-only safety guard
+      - ${PIPELINE_STORAGE_PATH}/active:/storage/active
+      - ${PIPELINE_STORAGE_PATH}/originals:/storage/originals
+      - ${PIPELINE_STORAGE_PATH}/exports:/storage/exports
+    command: uvicorn server.app:app --host 0.0.0.0 --port 3080 --reload
+
+  # 4. Derivative Builder (Node.js + Sharp + FFmpeg)
+  derivative-worker:
+    build:
+      context: ./scripts
+      dockerfile: Dockerfile
+    container_name: bam-derivative-worker
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+    volumes:
+      - ./scripts:/app/scripts
+      - ${PIPELINE_STORAGE_PATH}/active:/storage/active:ro
+      - ${PIPELINE_STORAGE_PATH}/exports:/storage/exports
+    command: node /app/scripts/derivative_builder.js
+
+volumes:
+  pg_data:
+  redis_data:
+
