@@ -6,4 +6,3 @@ redis
 anthropic
 openai
 websockets
-psycopg2
