@@ -4,9 +4,11 @@ import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import exifread
+from pipeline_logging import get_logger
 
 DB_DSN = os.getenv("DATABASE_URL")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
+logger = get_logger("vision")
 
 def get_exif_data(filepath):
     """Extracts comprehensive EXIF telemetry, angles, orientation, and GPS coordinates."""
@@ -56,12 +58,13 @@ def get_exif_data(filepath):
                     telemetry["camera_pitch"] = str(tags[tag_key])
                     break
     except Exception as e:
-        print(f"EXIF Error: {e}")
+        logger.warning("EXIF extraction failed for %s: %s", filepath, e)
         
     return telemetry
 
 def call_ollama(model: str, prompt: str, image_path: str = None):
     payload = {"model": model, "prompt": prompt, "stream": False, "keep_alive": -1, "format": "json"}
+    logger.debug("Calling Ollama model %s for %s", model, image_path or "text-only judgment")
     if image_path and os.path.exists(image_path):
         import base64
         with open(image_path, "rb") as img:
@@ -69,26 +72,29 @@ def call_ollama(model: str, prompt: str, image_path: str = None):
     try:
         res = httpx.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=None)
         if res.status_code != 200:
+            logger.warning("Ollama model %s returned HTTP %s", model, res.status_code)
             return {}
         return json.loads(res.json().get("response", "{}"))
     except Exception as e:
-        print(f"[AI EXCEPTION] {model}: {str(e)}")
+        logger.error("Ollama request failed for %s: %s", model, e)
         return {}
 
 def execute_phased_batch():
+    logger.info("Connecting to the asset database")
     conn = psycopg2.connect(DB_DSN, cursor_factory=RealDictCursor)
     cur = conn.cursor()
     
     cur.execute("SELECT * FROM assets WHERE workflow_state = 'INGESTED'")
     assets = cur.fetchall()
     if not assets:
-        print("No assets to process.")
+        logger.info("No ingested assets to process")
         conn.close()
         return
 
     # Phase 0: Full Telemetry & Angle Extraction
-    print(f"\n[PHASE 0] Extracting complete telemetry and EXIF angles for {len(assets)} assets...")
+    logger.info("Phase 0: extracting telemetry for %s assets", len(assets))
     for a in assets:
+        logger.debug("Extracting telemetry for asset %s", a["asset_id"])
         t = get_exif_data(a["source_path"])
         cur.execute("""
             UPDATE assets SET sensor_model = %s, latitude = %s, longitude = %s, altitude_meters = %s
@@ -103,7 +109,7 @@ def execute_phased_batch():
     verifier_res = {}
 
     # Phase 1A: Screener (Moondream with Strict Altitude Rules & No Prompt Echoing)
-    print(f"\n[PHASE 1A] Loading Moondream and screening {len(assets)} assets...")
+    logger.info("Phase 1A: screening %s assets with Moondream", len(assets))
     for a in assets:
         m_kind = a.get("media_kind", "still")
         alt = a.get('alt', 0) or 0
@@ -130,7 +136,7 @@ def execute_phased_batch():
         screener_res[a["asset_id"]] = call_ollama("moondream", prompt, a["source_path"])
 
     # Phase 1B: Verifier (LLaVA - Granular Details, 3D Orientation & Aesthetics)
-    print(f"\n[PHASE 1B] Loading LLaVA and verifying {len(assets)} assets...")
+    logger.info("Phase 1B: verifying %s assets with LLaVA", len(assets))
     for a in assets:
         m_kind = a.get("media_kind", "still")
         telemetry_info = f"[EXIF Telemetry -> Altitude: {a.get('altitude_meters')}m]"
@@ -162,7 +168,7 @@ def execute_phased_batch():
         verifier_res[a["asset_id"]] = call_ollama("llava", prompt, a["source_path"])
 
     # Phase 1C: Judge (Llama 3.1)
-    print(f"\n[PHASE 1C] Loading Llama 3.1 to judge results...")
+    logger.info("Phase 1C: judging results with Llama 3.1")
     for a in assets:
         aid = a["asset_id"]
         prompt = f"""You are the final review judge. Compare these outputs.
@@ -187,7 +193,7 @@ def execute_phased_batch():
     
     conn.commit()
     conn.close()
-    print("\nBatch complete. Awaiting human review.")
+    logger.info("Batch complete; assets are awaiting human review")
 
 if __name__ == "__main__":
     execute_phased_batch()

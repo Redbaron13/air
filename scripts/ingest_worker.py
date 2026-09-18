@@ -5,10 +5,13 @@ import subprocess
 from datetime import datetime
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from pipeline_logging import get_logger
 
 DB_DSN = os.getenv("DATABASE_URL", "postgresql://bam_admin:bam_secure_super_password_2026@postgres:5432/bam_media_factory")
+logger = get_logger("ingest")
 
 def get_db():
+    logger.debug("Connecting to the asset database")
     return psycopg2.connect(DB_DSN, cursor_factory=RealDictCursor)
 
 def compute_sha256(filepath: str) -> str:
@@ -32,18 +35,21 @@ def extract_exif(filepath: str) -> dict:
             "focal_length": data.get("FocalLength", "Unknown"),
             "gimbal_pitch": float(data.get("GimbalPitchDegree", 0.0)),
         }
-    except Exception:
+    except Exception as error:
+        logger.debug("EXIF extraction failed for %s: %s", filepath, error)
         return {}
 
 def ingest_file(filepath: str, batch_id="A01"):
+    logger.info("Starting ingestion for %s", filepath)
     file_hash = compute_sha256(filepath)
+    logger.debug("Computed SHA256 for %s", filepath)
     
     with get_db() as conn:
         with conn.cursor() as cur:
             # Deduplication Check
             cur.execute("SELECT asset_id FROM assets WHERE original_sha256 = %s", (file_hash,))
             if cur.fetchone():
-                print(f"[DEDUP] Duplicate discarded: {filepath}")
+                logger.info("Duplicate discarded: %s", filepath)
                 return None
 
             meta = extract_exif(filepath)
@@ -65,7 +71,7 @@ def ingest_file(filepath: str, batch_id="A01"):
                 meta.get("lat"), meta.get("lon"), meta.get("alt")
             ))
             conn.commit()
-            print(f"[INGESTED] Asset staged: {asset_id}")
+            logger.info("Asset staged: %s", asset_id)
             return asset_id
 
 if __name__ == "__main__":

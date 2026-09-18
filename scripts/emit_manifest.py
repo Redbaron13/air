@@ -2,10 +2,13 @@ import os
 import json
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from pipeline_logging import get_logger
 
 DB_DSN = os.getenv("DATABASE_URL", "postgresql://bam_admin:bam_secure_super_password_2026@postgres:5432/bam_media_factory")
+logger = get_logger("manifest")
 
 def compile_manifest(output_path="/storage/exports/assets.manifest.json"):
+    logger.info("Compiling manifest to %s", output_path)
     conn = psycopg2.connect(DB_DSN, cursor_factory=RealDictCursor)
     cur = conn.cursor()
 
@@ -17,6 +20,7 @@ def compile_manifest(output_path="/storage/exports/assets.manifest.json"):
         WHERE a.workflow_state = 'APPROVED'
     """)
     assets = cur.fetchall()
+    logger.debug("Found %s approved assets", len(assets))
 
     manifest = {}
     seen_hashes = set()
@@ -27,18 +31,19 @@ def compile_manifest(output_path="/storage/exports/assets.manifest.json"):
 
         # Build Guardrail 1: Deduplication integrity
         if sha in seen_hashes:
-            print(f"[FATAL BUILD ERROR] Duplicate SHA256 collision detected for: {aid}. Skipping.")
+            logger.error("Duplicate SHA256 collision detected for %s; skipping", aid)
             continue
         seen_hashes.add(sha)
 
         # Build Guardrail 2: Alt text presence
         if not a["alt"] or len(a["alt"].strip()) < 10:
-            print(f"[WARNING] Asset {aid} has empty or insufficient alt text. Skipping manifest entry.")
+            logger.warning("Asset %s has insufficient alt text; skipping", aid)
             continue
 
         # Query all confirmed responsive child variants
         cur.execute("SELECT width, format FROM asset_copies WHERE parent_asset_id = %s", (aid,))
         copies = cur.fetchall()
+        logger.debug("Asset %s has %s derivative copies", aid, len(copies))
 
         # Extract unique widths and formats
         variants = sorted(list(set([c["width"] for c in copies])))
@@ -73,7 +78,7 @@ def compile_manifest(output_path="/storage/exports/assets.manifest.json"):
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
 
-    print(f"[MANIFEST COMPILED] Wrote {len(manifest)} validated assets to {output_path}")
+    logger.info("Wrote %s validated assets", len(manifest))
     conn.close()
 
 if __name__ == "__main__":

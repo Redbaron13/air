@@ -4,8 +4,13 @@ const path = require("path");
 const crypto = require("crypto");
 const { Client } = require("pg");
 
+const verbose = process.env.PIPELINE_VERBOSE === "1";
+function debugLog(message) {
+  if (verbose) console.log(`[DEBUG] ${message}`);
+}
+
 const db = new Client({ connectionString: process.env.DATABASE_URL });
-db.connect();
+db.connect().then(() => debugLog("Connected to the asset database"));
 
 const VARIANTS = [
   { sizeTier: "3M4", code: "I10", width: 400, format: "webp", quality: 80 },
@@ -15,6 +20,7 @@ const VARIANTS = [
 ];
 
 async function buildVariants(assetId, sourcePath, uniqueStem, outDir) {
+  debugLog(`Building derivatives for ${assetId} from ${sourcePath}`);
   if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
 
   for (const v of VARIANTS) {
@@ -28,6 +34,7 @@ async function buildVariants(assetId, sourcePath, uniqueStem, outDir) {
     else p = p.jpeg({ quality: v.quality });
 
     const info = await p.toFile(target);
+    debugLog(`Wrote ${target} (${info.width}x${info.height}, ${info.size} bytes)`);
     const hash = crypto.createHash("sha256").update(fs.readFileSync(target)).digest("hex");
     
     await db.query(`
