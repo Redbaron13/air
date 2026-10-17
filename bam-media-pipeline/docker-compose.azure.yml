@@ -1,0 +1,36 @@
+services:
+  api-server:
+    environment:
+      - BAM_VISION_BACKEND=azure
+      - BAM_VISION_LIMIT=${BAM_VISION_LIMIT:-180}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
+      - AZURE_OPENAI_DEPLOYMENT=${AZURE_OPENAI_DEPLOYMENT:-gpt-4o}
+      - AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION:-2024-08-01-preview}
+      - OLLAMA_URL=
+
+  vision-worker:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: bam-vision-worker
+    depends_on:
+      - postgres
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - BAM_VISION_BACKEND=azure
+      - BAM_VISION_MAX_EDGE=${BAM_VISION_MAX_EDGE:-1600}
+      - BAM_VISION_LIMIT=${BAM_VISION_LIMIT:-180}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
+      - AZURE_OPENAI_DEPLOYMENT=${AZURE_OPENAI_DEPLOYMENT:-gpt-4o}
+      - AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION:-2024-08-01-preview}
+    volumes:
+      - ./scripts:/app/scripts
+      - ${ONEDRIVE_SOURCE_PATH}:/storage/onedrive_mount:ro
+      - ${PIPELINE_STORAGE_PATH}/active:/storage/active
+      - ${PIPELINE_STORAGE_PATH}/originals:/storage/originals
+      - ${PIPELINE_STORAGE_PATH}/exports:/storage/exports
+    working_dir: /app
+    command: python -u /app/scripts/cloud_fallback_worker.py
+    restart: "no"

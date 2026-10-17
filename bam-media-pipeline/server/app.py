@@ -28,6 +28,25 @@ manager = []
 class IngestRequest(BaseModel):
     paths: list[str]
 
+
+def has_cloud_backend() -> bool:
+    backend = os.getenv("BAM_VISION_BACKEND", "auto").strip().lower()
+    if backend == "ollama":
+        return False
+    if backend in {"azure", "openai", "anthropic", "cloud"}:
+        return True
+    return bool(
+        (os.getenv("AZURE_OPENAI_ENDPOINT") and (os.getenv("AZURE_OPENAI_API_KEY") or os.getenv("AZURE_OPENAI_KEY")))
+        or os.getenv("OPENAI_API_KEY")
+        or os.getenv("ANTHROPIC_API_KEY")
+    )
+
+
+def orchestrator_script() -> str:
+    if has_cloud_backend():
+        return "/app/scripts/cloud_fallback_worker.py"
+    return "/app/scripts/vision_orchestrator.py"
+
 async def log_to_gui(message: str):
     """Publishes log messages to Redis so they stream to the GUI terminal via WebSockets."""
     try:
@@ -141,26 +160,47 @@ async def manage_vram(action: str, model_name: str):
             await log_to_gui(f"[ERROR] {str(e)}")
             return {"error": str(e)}
 
-@app.post("/api/pipeline/run-orchestrator")
-async def run_orchestrator():
-    """Triggers the multi-phase AI evaluation pipeline."""
-    await log_to_gui("[SYSTEM] Starting Vision Orchestrator batch...")
+async def _run_script(script_path: str, label: str):
+    await log_to_gui(f"[SYSTEM] Starting {label} ({script_path})...")
     try:
         process = await asyncio.create_subprocess_exec(
-            "python", "-u", "/app/scripts/vision_orchestrator.py",
+            "python", "-u", script_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT
         )
         while True:
             line = await process.stdout.readline()
-            if not line: break
+            if not line:
+                break
             text = line.decode().strip()
-            if text: await log_to_gui(text)
+            if text:
+                await log_to_gui(text)
         await process.wait()
-        await log_to_gui("[SYSTEM] Orchestrator batch complete.")
-        return {"status": "success"}
+        await log_to_gui(f"[SYSTEM] {label} complete (exit {process.returncode}).")
+        return {"status": "success", "script": script_path, "code": process.returncode}
     except Exception as e:
-        await log_to_gui(f"[ERROR] Orchestrator failed: {str(e)}")
+        await log_to_gui(f"[ERROR] {label} failed: {str(e)}")
         return {"error": str(e)}
+
+
+@app.post("/api/pipeline/run-orchestrator")
+async def run_orchestrator():
+    """Cloud worker when keys exist; otherwise local Ollama triple-pass."""
+    return await _run_script(orchestrator_script(), "Vision Orchestrator")
+
+
+@app.post("/api/pipeline/run-cloud")
+async def run_cloud():
+    """Force the cloud fallback worker."""
+    return await _run_script("/app/scripts/cloud_fallback_worker.py", "Cloud fallback worker")
+
+
+@app.get("/api/pipeline/backend")
+def pipeline_backend():
+    return {
+        "cloud": has_cloud_backend(),
+        "script": orchestrator_script(),
+        "forced": os.getenv("BAM_VISION_BACKEND", "auto"),
+    }
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
