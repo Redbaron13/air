@@ -1,0 +1,13 @@
+---
+description: AIR media pipeline security, safety and release gates
+alwaysApply: true
+---
+- Use feature branches and draft PRs. Never deploy production or publish media automatically.
+- Originals are immutable and read-only; all transformations create new derivatives with hashes, model/config metadata, timestamps and parent source IDs.
+- A model score is NOT publication authorization. Human approval must precede website publication.
+- Use synthetic, non-client images/video for fixtures; do not send GPS-sensitive, client-owned or confidential imagery to external AI providers without explicit authorization.
+- Never open or disclose actual .env secrets or production DB dumps. Use env.example placeholders and environment-specific scoped secrets.
+- Do not connect development workers to a live Hetzner site, live OneDrive tenant, or production Azure resources by default.
+- Keep Postgres and Redis private; local API must not be exposed to the LAN or internet before authentication and authorization review.
+- Any AIR-to-website integration must use a schema-versioned reviewed export manifest and rights/consent checks.
+- Run Compose config, syntax checks, image build and fixture-backed tests (when present) before PR; document missing test coverage.

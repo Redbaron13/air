@@ -1,0 +1,34 @@
+name: Media Pipeline CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Syntax check Python
+        run: python -m compileall -q bam-media-pipeline/server bam-media-pipeline/scripts
+      - name: Unit tests
+        run: |
+          pip install pytest psycopg2-binary exifread
+          cd bam-media-pipeline && python -m pytest -q tests
+      - name: Check shell syntax
+        run: |
+          bash -n setup.sh
+          find bam-media-pipeline/scripts -type f -name '*.sh' -exec bash -n {} \;
+      - name: Docker Compose config
+        run: |
+          cd bam-media-pipeline
+          cp env.example .env
+          docker compose -f docker-compose.nas.yml config --quiet
+      - name: Build pipeline images
+        run: |
+          cd bam-media-pipeline
+          docker compose -f docker-compose.nas.yml build
