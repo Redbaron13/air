@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BAM Media Factory - Review Console</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <style>
+    .tab-btn[aria-selected="true"] { border-color: #34d399; color: #34d399; }
+    .lvl-fail { color: #f87171 } .lvl-warn { color: #fbbf24 } .lvl-info { color: #94a3b8 } .lvl-ok { color: #34d399 }
+    .row-sel { background: #1e293b; }
+    pre { white-space: pre-wrap; word-break: break-word; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 h-screen flex flex-col p-3 overflow-hidden text-sm">
+  <header class="flex justify-between items-end border-b border-slate-800 pb-2 mb-2">
+    <h1 class="text-emerald-400 font-bold text-lg tracking-wider">BAM MEDIA FACTORY // REVIEW CONSOLE</h1>
+    <nav class="flex gap-1 text-xs font-bold uppercase tracking-wider" role="tablist">
+      <button class="tab-btn border-b-2 border-transparent px-3 py-1" data-tab="pipeline" aria-selected="true">Pipeline</button>
+      <button class="tab-btn border-b-2 border-transparent px-3 py-1" data-tab="review" aria-selected="false">Review</button>
+      <button class="tab-btn border-b-2 border-transparent px-3 py-1" data-tab="groups" aria-selected="false">Groups</button>
+      <button class="tab-btn border-b-2 border-transparent px-3 py-1" data-tab="validation" aria-selected="false">Validation</button>
+      <a href="/" class="px-3 py-1 text-slate-500 hover:text-slate-200">Mission Control &rarr;</a>
+    </nav>
+  </header>
+
+  <!-- PIPELINE -->
+  <section id="tab-pipeline" class="flex-1 overflow-auto grid grid-cols-3 gap-3">
+    <div class="col-span-2 space-y-3">
+      <div class="bg-slate-900 border border-slate-800 rounded p-3">
+        <h2 class="text-xs uppercase font-bold text-slate-500 mb-2">Pipeline flow (assets that reached each stage)</h2>
+        <div id="stage-flow" class="flex items-stretch gap-1 overflow-x-auto"></div>
+        <p class="text-[11px] text-slate-500 mt-2">A large drop between two stages means assets are stuck or a worker is failing. Staged files not yet ingested: <span id="staged-count" class="text-slate-300">-</span></p>
+      </div>
+      <div class="grid grid-cols-3 gap-3">
+        <div class="bg-slate-900 border border-slate-800 rounded p-3"><h3 class="text-xs uppercase font-bold text-slate-500 mb-2">Workflow state</h3><div id="by-state"></div></div>
+        <div class="bg-slate-900 border border-slate-800 rounded p-3"><h3 class="text-xs uppercase font-bold text-slate-500 mb-2">Media type</h3><div id="by-kind"></div></div>
+        <div class="bg-slate-900 border border-slate-800 rounded p-3"><h3 class="text-xs uppercase font-bold text-slate-500 mb-2">AI source (local / cloud)</h3><div id="by-backend"></div></div>
+      </div>
+      <div class="bg-slate-900 border border-slate-800 rounded p-3">
+        <h3 class="text-xs uppercase font-bold text-slate-500 mb-2">AI agreement score distribution (0-100%)</h3>
+        <div id="histogram" class="flex items-end gap-1 h-24"></div>
+        <p class="text-[11px] text-slate-500 mt-1">If every score is 100% the judge may not be independently reviewing; if all are near 0% a model is probably failing.</p>
+      </div>
+    </div>
+    <div class="space-y-3 flex flex-col min-h-0">
+      <div class="bg-slate-900 border border-slate-800 rounded p-3">
+        <h2 class="text-xs uppercase font-bold text-slate-500 mb-2">System health</h2>
+        <div id="health" class="space-y-1 text-xs"></div>
+        <div id="validation-chip" class="mt-3 text-xs"></div>
+      </div>
+      <div class="bg-black border border-slate-800 rounded p-3 flex-1 min-h-[200px] flex flex-col">
+        <h2 class="text-xs uppercase font-bold text-slate-500 mb-2">Live pipeline events <span id="ws-state" class="text-slate-600 normal-case font-normal">(connecting)</span></h2>
+        <div id="events" class="flex-1 overflow-auto font-mono text-[11px] text-emerald-400 space-y-0.5"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- REVIEW -->
+  <section id="tab-review" class="hidden flex-1 overflow-hidden grid grid-cols-12 gap-3">
+    <div class="col-span-3 bg-slate-900 border border-slate-800 rounded p-2 flex flex-col min-h-0">
+      <div class="grid grid-cols-2 gap-1 mb-2 text-xs">
+        <select id="f-state" class="bg-slate-800 rounded p-1"><option value="">All states</option><option>INGESTED</option><option selected>PENDING_HUMAN</option><option>APPROVED</option><option>REJECTED</option></select>
+        <select id="f-kind" class="bg-slate-800 rounded p-1"><option value="">All types</option><option>still</option><option>video</option><option>3d_model</option></select>
+        <input id="f-q" placeholder="Search id / name / text" class="bg-slate-800 rounded p-1 col-span-2">
+        <label class="col-span-2 flex items-center gap-1 text-slate-400"><input id="f-issues" type="checkbox"> Only assets with validation findings</label>
+      </div>
+      <div id="asset-count" class="text-[11px] text-slate-500 mb-1"></div>
+      <div id="asset-list" class="flex-1 overflow-auto text-xs space-y-0.5"></div>
+      <p class="text-[10px] text-slate-600 mt-1">Keys: J/K next/prev, A approve, R reject, W rework</p>
+    </div>
+    <div id="detail" class="col-span-9 overflow-auto space-y-3 pr-1">
+      <div class="text-slate-500 italic p-6">Select an asset to review.</div>
+    </div>
+  </section>
+
+  <!-- GROUPS -->
+  <section id="tab-groups" class="hidden flex-1 overflow-auto space-y-3">
+    <p class="text-xs text-slate-500">Location clusters join geotagged assets within <span id="radius">-</span> m of each other. Model/map parts are joined by a shared identifier (AI-supplied group id, otherwise the file name minus part/tile/LOD suffixes).</p>
+    <div class="bg-slate-900 border border-slate-800 rounded p-3"><h2 class="text-xs uppercase font-bold text-slate-500 mb-2">Map of geotagged assets</h2><div id="map"></div></div>
+    <div id="group-models"></div><div id="group-shoots"></div><div id="group-locations"></div>
+  </section>
+
+  <!-- VALIDATION -->
+  <section id="tab-validation" class="hidden flex-1 overflow-auto">
+    <div id="validation-summary" class="flex gap-2 mb-2 text-xs"></div>
+    <table class="w-full text-xs"><thead class="text-slate-500 text-left"><tr><th class="p-1">Level</th><th>Check</th><th>Asset</th><th>State</th><th>Detail</th></tr></thead><tbody id="validation-rows"></tbody></table>
+  </section>
+
+  <script src="/js/review.js"></script>
+</body>
+</html>

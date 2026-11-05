@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 import httpx
 import psycopg2
@@ -78,6 +79,9 @@ async def log_to_gui(message: str):
     try:
         r = aioredis.from_url(REDIS_URL)
         await r.publish("pipeline_events", message)
+        # Keep recent events so the review console can show history after a reload.
+        await r.lpush("pipeline_events_history", json.dumps({"t": datetime.now(timezone.utc).isoformat(), "msg": message}))
+        await r.ltrim("pipeline_events_history", 0, 499)
     except Exception as e:
         logger.warning("Unable to publish dashboard event: %s", e)
 
@@ -264,5 +268,8 @@ def pipeline_backend():
         "script": orchestrator_script(),
         "forced": os.getenv("BAM_VISION_BACKEND", "auto"),
     }
+
+from server.review_api import router as review_router  # noqa: E402
+app.include_router(review_router)
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
