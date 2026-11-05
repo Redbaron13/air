@@ -6,15 +6,38 @@ from datetime import datetime
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-DB_DSN = os.getenv("DATABASE_URL", "postgresql://bam_admin:bam_secure_super_password_2026@postgres:5432/bam_media_factory")
+DB_DSN = os.environ["DATABASE_URL"]
 
 MEDIA_EXT = {
-    ".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".heic", ".dng",
+    ".jpg", ".jpeg", ".png", ".webp", ".avif", ".tif", ".tiff", ".heic", ".dng",
     ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".glb", ".gltf", ".obj", ".usdz",
 }
 
 def get_db():
     return psycopg2.connect(DB_DSN, cursor_factory=RealDictCursor)
+
+SUPPORTED_EXTENSIONS = tuple(sorted(MEDIA_EXT))
+
+def iter_ingest_targets(path: str) -> list[str]:
+    if os.path.isfile(path):
+        return [path] if path.lower().endswith(SUPPORTED_EXTENSIONS) else []
+
+    if not os.path.isdir(path):
+        return []
+
+    targets = []
+    for root, _, files in os.walk(path):
+        for name in sorted(files):
+            if name.lower().endswith(SUPPORTED_EXTENSIONS):
+                targets.append(os.path.join(root, name))
+    return targets
+
+def build_asset_identifiers(file_hash: str, batch_id: str = "A01", now: datetime | None = None) -> tuple[str, str]:
+    timestamp = now or datetime.now()
+    unique_stem = file_hash[:8].upper()
+    date_stem = timestamp.strftime("%d%m%y")
+    asset_id = f"{date_stem}-001BAMPHO{batch_id}-{unique_stem}"
+    return unique_stem, asset_id
 
 def compute_sha256(filepath: str) -> str:
     hasher = hashlib.sha256()
@@ -59,9 +82,7 @@ def ingest_file(filepath: str, batch_id="A01"):
                 return None
 
             meta = extract_exif(filepath)
-            unique4 = file_hash[:4].upper()
-            date_stem = datetime.now().strftime("%d%m%y")
-            asset_id = f"{date_stem}-001BAMPHO{batch_id}-{unique4}"
+            unique_stem, asset_id = build_asset_identifiers(file_hash, batch_id=batch_id)
 
             cur.execute("""
                 INSERT INTO assets (
@@ -71,7 +92,7 @@ def ingest_file(filepath: str, batch_id="A01"):
                     workflow_state
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'INGESTED')
             """, (
-                asset_id, unique4, os.path.basename(filepath), filepath,
+                asset_id, unique_stem, os.path.basename(filepath), filepath,
                 file_hash, kind_for(filepath), meta.get("captured_at"), meta.get("sensor"),
                 meta.get("focal_length"), meta.get("gimbal_pitch"),
                 meta.get("lat"), meta.get("lon"), meta.get("alt")
@@ -80,19 +101,13 @@ def ingest_file(filepath: str, batch_id="A01"):
             print(f"[INGESTED] Asset staged: {asset_id}")
             return asset_id
 
-def iter_media(root: str):
-    if os.path.isfile(root):
-        yield root
-        return
-    for dirpath, _dirs, files in os.walk(root):
-        for name in files:
-            if os.path.splitext(name)[1].lower() in MEDIA_EXT:
-                yield os.path.join(dirpath, name)
-
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 2:
         raise SystemExit("usage: ingest_worker.py <file-or-folder> [more paths...]")
-    for target in sys.argv[1:]:
-        for media in iter_media(target):
-            ingest_file(media)
+    for path in sys.argv[1:]:
+        targets = iter_ingest_targets(path)
+        if not targets:
+            print(f"[SKIP] No supported media files found for: {path}")
+        for target in targets:
+            ingest_file(target)

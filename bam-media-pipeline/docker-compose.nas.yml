@@ -1,0 +1,61 @@
+# Standalone NAS development deployment. Databases are internal to Docker.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Required}
+      POSTGRES_USER: ${POSTGRES_USER:?Required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Required}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./sql/init_schema.sql:/docker-entrypoint-initdb.d/init_schema.sql:ro
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+  api-server:
+    build: {context: ./server}
+    restart: unless-stopped
+    depends_on: [postgres, redis]
+    ports:
+      - "127.0.0.1:3080:3080"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Required}
+      REDIS_URL: ${REDIS_URL:?Required}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      BAM_VISION_BACKEND: ${BAM_VISION_BACKEND:-ollama}
+      BAM_VISION_MAX_EDGE: ${BAM_VISION_MAX_EDGE:-1600}
+      BAM_VISION_LIMIT: ${BAM_VISION_LIMIT:-180}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      AZURE_OPENAI_DEPLOYMENT: ${AZURE_OPENAI_DEPLOYMENT:-gpt-4o}
+      AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-2024-08-01-preview}
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes:
+      - ./server:/app/server:ro
+      - ./scripts:/app/scripts:ro
+      - ./static:/app/static:ro
+      - ${ONEDRIVE_SOURCE_PATH:?Required}:/storage/onedrive_mount:ro
+      - ${PIPELINE_STORAGE_PATH:?Required}/active:/storage/active
+      - ${PIPELINE_STORAGE_PATH:?Required}/originals:/storage/originals:ro
+      - ${PIPELINE_STORAGE_PATH:?Required}/exports:/storage/exports
+    command: uvicorn server.app:app --host 0.0.0.0 --port 3080
+  derivative-worker:
+    build: {context: ./scripts}
+    restart: unless-stopped
+    depends_on: [postgres, redis]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Required}
+      REDIS_URL: ${REDIS_URL:?Required}
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - ${PIPELINE_STORAGE_PATH:?Required}/active:/storage/active:ro
+      - ${PIPELINE_STORAGE_PATH:?Required}/exports:/storage/exports
+    command: node /app/scripts/derivative_builder.js
+volumes:
+  pg_data:
+  redis_data:
