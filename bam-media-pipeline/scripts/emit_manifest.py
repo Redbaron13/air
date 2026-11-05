@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
@@ -39,6 +40,7 @@ def build_manifest_entry(asset: dict, copies: list[dict]) -> dict:
 DB_DSN = os.getenv("DATABASE_URL", "postgresql://bam_admin:bam_secure_super_password_2026@postgres:5432/bam_media_factory")
 
 def compile_manifest(output_path="/storage/exports/assets.manifest.json"):
+    logger.info("Manifest compilation started; output_path=%s", output_path)
     conn = psycopg2.connect(DB_DSN, cursor_factory=RealDictCursor)
     cur = conn.cursor()
 
@@ -50,6 +52,7 @@ def compile_manifest(output_path="/storage/exports/assets.manifest.json"):
         WHERE a.workflow_state = 'APPROVED'
     """)
     assets = cur.fetchall()
+    logger.info("Loaded %d approved assets", len(assets))
 
     manifest = {}
     seen_hashes = set()
@@ -60,13 +63,13 @@ def compile_manifest(output_path="/storage/exports/assets.manifest.json"):
 
         # Build Guardrail 1: Deduplication integrity
         if sha in seen_hashes:
-            print(f"[FATAL BUILD ERROR] Duplicate SHA256 collision detected for: {aid}. Skipping.")
+            logger.error("Duplicate SHA-256 in approved assets; asset_id=%s", aid)
             continue
         seen_hashes.add(sha)
 
         # Build Guardrail 2: Alt text presence
         if not a["alt"] or len(a["alt"].strip()) < 10:
-            print(f"[WARNING] Asset {aid} has empty or insufficient alt text. Skipping manifest entry.")
+            logger.warning("Skipping asset with missing or short alt text; asset_id=%s", aid)
             continue
 
         # Query all confirmed responsive child variants
@@ -81,7 +84,7 @@ def compile_manifest(output_path="/storage/exports/assets.manifest.json"):
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
 
-    print(f"[MANIFEST COMPILED] Wrote {len(manifest)} validated assets to {output_path}")
+    logger.info("Manifest written; assets=%d output_path=%s", len(manifest), output_path)
     conn.close()
 
 if __name__ == "__main__":
