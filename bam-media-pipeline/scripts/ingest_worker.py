@@ -6,7 +6,7 @@ from datetime import datetime
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-DB_DSN = os.getenv("DATABASE_URL", "postgresql://bam_admin:bam_secure_super_password_2026@postgres:5432/bam_media_factory")
+DB_DSN = os.environ["DATABASE_URL"]
 
 MEDIA_EXT = {
     ".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".heic", ".dng",
