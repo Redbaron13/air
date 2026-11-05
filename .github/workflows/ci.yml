@@ -15,6 +15,10 @@ jobs:
           python-version: '3.12'
       - name: Syntax check Python
         run: python -m compileall -q bam-media-pipeline/server bam-media-pipeline/scripts
+      - name: Unit tests
+        run: |
+          pip install pytest psycopg2-binary exifread
+          cd bam-media-pipeline && python -m pytest -q tests
       - name: Check shell syntax
         run: |
           bash -n setup.sh
