@@ -39,6 +39,12 @@ def build_manifest_entry(asset: dict, copies: list[dict]) -> dict:
 
 DB_DSN = os.getenv("DATABASE_URL", "postgresql://bam_admin:bam_secure_super_password_2026@postgres:5432/bam_media_factory")
 
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)sZ %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("bam.manifest")
+
 def compile_manifest(output_path="/storage/exports/assets.manifest.json"):
     logger.info("Manifest compilation started; output_path=%s", output_path)
     conn = psycopg2.connect(DB_DSN, cursor_factory=RealDictCursor)
