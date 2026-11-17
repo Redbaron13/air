@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import local_review as lr
@@ -110,6 +111,14 @@ class LocalReviewTests(unittest.TestCase):
         a = {f: 'unknown' for f in lr.FIELDS}
         comp = {f: {'status': 'agree', 'reason': 'same'} for f in lr.FIELDS}
         self.assertEqual(lr.discrepancies(a, a, comp), list(lr.FIELDS))
+
+    def test_context_budget_from_environment(self):
+        with patch.dict(lr.os.environ, {"LOCAL_MODEL_CONTEXT": "4096"}):
+            self.assertEqual(lr.Ollama().context, 4096)
+        with self.assertRaises(ValueError):
+            lr.Ollama(context=1024)
+        with self.assertRaises(ValueError):
+            lr.Ollama(context=65536)
 
     def test_substantial_policy(self):
         self.assertFalse(lr.substantial(['image_quality']))

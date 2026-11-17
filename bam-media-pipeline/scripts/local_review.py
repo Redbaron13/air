@@ -128,9 +128,11 @@ def make_preview(source, target):
 
 
 class Ollama:
-    def __init__(self, context=8192):
+    def __init__(self, context=None):
         self.url = os.environ.get('OLLAMA_URL', 'http://ollama:11434').rstrip('/')
-        self.context = context
+        self.context = int(context or os.environ.get("LOCAL_MODEL_CONTEXT", "8192"))
+        if not 2048 <= self.context <= 32768:
+            raise ValueError("Local model context must be 2048–32768")
 
     def post(self, endpoint, payload):
         req = Request(self.url + endpoint, data=json.dumps(payload).encode(),

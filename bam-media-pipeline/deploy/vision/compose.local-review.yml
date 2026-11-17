@@ -8,7 +8,7 @@ services:
       OLLAMA_HOST: 0.0.0.0:11434
       OLLAMA_NUM_PARALLEL: "1"
       OLLAMA_MAX_LOADED_MODELS: "1"
-      OLLAMA_CONTEXT_LENGTH: "8192"
+      OLLAMA_CONTEXT_LENGTH: "${LOCAL_MODEL_CONTEXT:-8192}"
       OLLAMA_KEEP_ALIVE: "0"
     volumes:
       - ${BAM_EXT4_ROOT:?Set BAM_EXT4_ROOT}/models:/root/.ollama
@@ -38,6 +38,7 @@ services:
     cpus: 2
     environment:
       OLLAMA_URL: http://ollama:11434
+      LOCAL_MODEL_CONTEXT: "${LOCAL_MODEL_CONTEXT:-8192}"
       LOCAL_INFORMED_MODEL: ${LOCAL_INFORMED_MODEL:-gemma3:4b}
       LOCAL_BLIND_MODEL: ${LOCAL_BLIND_MODEL:-qwen2.5vl:3b}
       LOCAL_MERGER_MODEL: ${LOCAL_MERGER_MODEL:-qwen3:4b}
