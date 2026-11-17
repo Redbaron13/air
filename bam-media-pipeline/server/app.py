@@ -58,7 +58,7 @@ def validated_staged_file(raw_path: str) -> str:
 
 def has_cloud_backend() -> bool:
     backend = os.getenv("BAM_VISION_BACKEND", "auto").strip().lower()
-    if backend == "ollama":
+    if backend in {"ollama", "openrouter"}:
         return False
     if backend in {"azure", "openai", "anthropic", "cloud"}:
         return True
@@ -128,7 +128,7 @@ async def websocket_logs(websocket: WebSocket):
 @app.get("/api/storage/staged")
 def get_staged_files():
     """Scans the active directory for staged images, videos, and 3D assets."""
-    active_dir = "/storage/active"
+    active_dir = str(ACTIVE_DIR)
     staged = []
     if os.path.exists(active_dir):
         for root, dirs, files in os.walk(active_dir):
@@ -242,11 +242,15 @@ async def _run_script(script_path: str, label: str):
             if text:
                 await log_to_gui(text)
         await process.wait()
+        if process.returncode != 0:
+            raise HTTPException(status_code=502, detail=f"{label} failed with exit {process.returncode}")
         await log_to_gui(f"[SYSTEM] {label} complete (exit {process.returncode}).")
         return {"status": "success", "script": script_path, "code": process.returncode}
+    except HTTPException:
+        raise
     except Exception as e:
-        await log_to_gui(f"[ERROR] {label} failed: {str(e)}")
-        return {"error": str(e)}
+        logger.exception("Worker failed")
+        raise HTTPException(status_code=502, detail="Worker failed; inspect server logs") from e
 
 
 @app.post("/api/pipeline/run-orchestrator")
@@ -273,3 +277,4 @@ from server.review_api import router as review_router  # noqa: E402
 app.include_router(review_router)
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
+

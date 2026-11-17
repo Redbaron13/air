@@ -37,7 +37,7 @@ def build_manifest_entry(asset: dict, copies: list[dict]) -> dict:
         "sha256": asset["original_sha256"]
     }
 
-DB_DSN = os.getenv("DATABASE_URL", "postgresql://bam_admin:bam_secure_super_password_2026@postgres:5432/bam_media_factory")
+DB_DSN = os.getenv("DATABASE_URL")
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -95,3 +95,4 @@ def compile_manifest(output_path="/storage/exports/assets.manifest.json"):
 
 if __name__ == "__main__":
     compile_manifest()
+

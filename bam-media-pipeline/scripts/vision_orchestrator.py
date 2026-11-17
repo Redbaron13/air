@@ -71,6 +71,9 @@ def get_exif_data(filepath):
     return telemetry
 
 def call_ollama(model: str, prompt: str, image_path: str = None):
+    from vision_client import call_free_model, validate_output
+    if os.getenv("BAM_VISION_BACKEND", "ollama") == "openrouter":
+        return call_free_model(prompt, image_path)
     payload = {"model": model, "prompt": prompt, "stream": False, "keep_alive": -1, "format": "json"}
     if image_path and os.path.exists(image_path):
         import base64
@@ -84,7 +87,7 @@ def call_ollama(model: str, prompt: str, image_path: str = None):
         if not isinstance(response, dict) or not response:
             raise ValueError(f"{model} returned an empty or invalid JSON object")
         logger.info("Ollama response accepted; model=%s fields=%s", model, sorted(response.keys()))
-        return response
+        return validate_output(response)
     except Exception as e:
         logger.exception("Ollama call failed; model=%s error=%s", model, e)
         raise
@@ -94,7 +97,7 @@ def execute_phased_batch():
     conn = psycopg2.connect(DB_DSN, cursor_factory=RealDictCursor)
     cur = conn.cursor()
     
-    cur.execute("SELECT * FROM assets WHERE workflow_state = 'INGESTED'")
+    cur.execute("SELECT * FROM assets WHERE workflow_state = 'INGESTED' AND media_kind = 'still'")
     assets = cur.fetchall()
     if not assets:
         logger.info("No INGESTED assets found; batch is complete")
@@ -131,7 +134,7 @@ def execute_phased_batch():
             "camera_pitch": a.get("camera_pitch"),
         })
         altitude_instruction = (
-            f"The verified altitude is {alt} meters. Choose strictly between 'nadir' and 'oblique'."
+            f"Recorded altitude is {alt} meters; datum is not verified. Altitude alone does not establish camera perspective. Use visible geometry and pitch when available."
             if isinstance(alt, (int, float)) and alt > 0
             else "Altitude is unavailable or not positive; infer perspective from the image."
         )
