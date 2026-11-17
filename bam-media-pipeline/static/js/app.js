@@ -1,6 +1,6 @@
 // 1. WebSocket for real-time terminal logs with auto-reconnect
 function connectWebSocket() {
-  const ws = new WebSocket(`ws://${window.location.host}/ws/logs`);
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/ws/logs`);
   ws.onmessage = (e) => {
     const term = document.getElementById("terminal");
     const line = document.createElement("div");

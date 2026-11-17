@@ -19,7 +19,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("bam.api")
 
+from server.access import OperatorGate
+
 app = FastAPI()
+app.add_middleware(OperatorGate)
 ALLOWED_ORIGINS = os.getenv(
     "ALLOWED_ORIGINS", "http://localhost:3080,http://127.0.0.1:3080"
 ).split(",")
@@ -199,14 +202,8 @@ def get_pending():
 
 @app.post("/api/assets/{asset_id}/approve")
 def approve_asset(asset_id: str):
-    """Approves an asset, moving it forward in the pipeline."""
-    with psycopg2.connect(DB_DSN) as conn, conn.cursor() as cur:
-        cur.execute("UPDATE assets SET workflow_state = 'APPROVED' WHERE asset_id = %s", (asset_id,))
-        if cur.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Asset not found")
-        conn.commit()
-    logger.info("Asset approved by dashboard; asset_id=%s", asset_id)
-    return {"status": "success"}
+    raise HTTPException(status_code=409, detail="Use the review decision endpoint with rights and metadata confirmation")
+
 
 @app.post("/api/system/vram/{action}/{model_name}")
 async def manage_vram(action: str, model_name: str):
@@ -227,30 +224,25 @@ async def manage_vram(action: str, model_name: str):
             return {"error": str(e)}
 
 async def _run_script(script_path: str, label: str):
-    await log_to_gui(f"[SYSTEM] Starting {label} ({script_path})...")
+    # Keep requests bounded and kill the child on timeout, disconnect/cancellation or read failure.
+    process = None
     try:
         process = await asyncio.create_subprocess_exec(
             "python", "-u", script_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT
-        )
-        while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-            text = line.decode().strip()
-            if text:
-                await log_to_gui(text)
-        await process.wait()
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        async with asyncio.timeout(900):
+            while line := await process.stdout.readline():
+                await log_to_gui(line.decode(errors="replace").strip())
+            await process.wait()
         if process.returncode != 0:
-            raise HTTPException(status_code=502, detail=f"{label} failed with exit {process.returncode}")
-        await log_to_gui(f"[SYSTEM] {label} complete (exit {process.returncode}).")
-        return {"status": "success", "script": script_path, "code": process.returncode}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("Worker failed")
-        raise HTTPException(status_code=502, detail="Worker failed; inspect server logs") from e
+            raise HTTPException(status_code=502, detail=f"{label} failed")
+        return {"status": "success", "code": process.returncode}
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="Worker exceeded its 15-minute limit") from exc
+    finally:
+        if process is not None and process.returncode is None:
+            process.kill()
+            await process.wait()
 
 
 @app.post("/api/pipeline/run-orchestrator")

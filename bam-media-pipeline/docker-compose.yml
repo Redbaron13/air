@@ -31,6 +31,8 @@ services:
     ports:
       - "127.0.0.1:${API_PORT:-3080}:3080"
     environment:
+      - PIPELINE_OPERATOR_TOKEN=${PIPELINE_OPERATOR_TOKEN:?Set PIPELINE_OPERATOR_TOKEN}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3080,http://127.0.0.1:3080}
       - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=${REDIS_URL}
       - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
