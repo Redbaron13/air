@@ -28,7 +28,7 @@ def run(model, output):
         im.save(path)
         expected = dict(zip(fields, ['blue', 'red', str(count), 'yellow' if circle else 'none']))
         payload = {'model': model, 'stream': False, 'think': False, 'format': schema,
-                   'keep_alive': 0, 'options': {'temperature': 0, 'num_ctx': 2048, 'num_predict': 128},
+                   'keep_alive': 0, 'options': {'temperature': 0, 'num_ctx': 2048, 'num_predict': 128, 'num_thread': 2},
                    'messages': [{'role': 'user', 'content': 'Inspect only this image. Return JSON with '
                                  'background_color, square_color, square_count (digit string), '
                                  'circle_color (none if absent). Use lowercase color names.',

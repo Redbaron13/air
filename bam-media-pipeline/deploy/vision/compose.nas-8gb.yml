@@ -1,5 +1,5 @@
 # Observed BAMNAS: 7.50 GB usable RAM, Volume 1 ext4.
-# Bootstrap only. Full review worker not yet deployed/benchmarked.
+# Test deployment only: idle review container, no automatic ingest or publication.
 services:
   ollama:
     image: ollama/ollama:latest
@@ -15,6 +15,27 @@ services:
       - /volume1/docker/bam-local-review/models:/root/.ollama
     mem_limit: 5g
     cpus: 2
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+  review:
+    build:
+      context: ./models/bam-worker
+      dockerfile: deploy/vision/Dockerfile.local-review
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c", "sleep infinity"]
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      LOCAL_MODEL_CONTEXT: "2048"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:size=128m"]
+    mem_limit: 512m
+    cpus: 1
+    volumes:
+      - /volume1/docker/bam-local-review/models/bam-tests:/input:ro
+      - /volume1/docker/bam-local-review/state:/state
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}

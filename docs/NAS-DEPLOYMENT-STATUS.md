@@ -1,25 +1,32 @@
-# NAS deployment status — 2026-11-17
+# NAS deployment status
 
-BAMNAS is signed in at http://10.0.0.37:9999. Volume 1 (Hot Storage) is ext4, 2.8 TB, initially 13.5 GB used. Docker share is `/volume1/docker`. Volume 2 is Btrfs and was not used.
+Updated November 17, 2026. This replaces earlier bootstrap-only checkpoints.
 
-Created and verified running Docker project `bam-local-review`, container `bam-local-review-ollama-1`. Models persist at `/volume1/docker/bam-local-review/models`. Ollama version 0.40.16, 5 GB memory limit, 2 CPUs, one parallel request and one loaded model, default context 4096, keep-alive zero. Host API mapping is loopback `127.0.0.1:11435:11434`. Existing Tailscale container left unchanged. No public API exposure, credentials or source collection mounts added.
+## Verified deployment
 
-Hardware correction: NAS has 7.50 GB usable RAM. Earlier 16+ GB four-model profile is not suitable as written. Do not run its installer unchanged. Use the saved `compose.nas-8gb.yml` bootstrap while benchmarking smaller models. Qwen2.5-VL 3B downloaded successfully and reports vision capability; first inference reached approximately 4.5 GB within a 5 GB container cap. This is already close to the limit. Full review worker is not deployed and model accuracy is not verified yet.
+BAMNAS at http://10.0.0.37:9999 has an Intel N100 CPU, 7.50 GB usable RAM and no GPU visible to Ollama. Volume 1 (Hot Storage) is ext4, 2.8 TB. Project root is `/volume1/docker/bam-local-review`. Volume 2 Btrfs and the existing Tailscale container were not changed.
 
-Synthetic control (96x96, one red square on blue) and test output/log files are on the NAS under `models/bam-tests`. Initial CLI inference did not return promptly; inspect JSON/log and server process before claiming success. No collection photo was uploaded to the NAS. Next: bounded API benchmark, select model/context sizes based on measured results, build worker, run known positive/negative fixtures and real photo, then validate full local disagreement gates. Existing local worker uses 8192 context and collection matcher 32768; neither is approved for this low-RAM NAS until tested. No cloud fallback should conceal model failure.
+Docker project `bam-local-review` has two running containers:
 
-## Latest checkpoint
+- `ollama`: version 0.40.16, 5g memory, 2 CPUs, one loaded model and one concurrent request, keep-alive zero. Host port is loopback-only `127.0.0.1:11435:11434`; models persist under `models`.
+- `review`: successfully built from the extracted AIR worker source in `models/bam-worker`. Python 3.12, Pillow and ExifTool; 512 MiB, one CPU, read-only root, dropped capabilities, no-new-privileges, bounded temporary filesystem. It idles between manual tests. It is NOT an automatic ingest/queue consumer.
 
-Both `qwen2.5vl:3b` and `qwen3-vl:2b` downloaded successfully. Qwen2.5VL was stopped without a response. Qwen3VL alias `bam-vision-test` (2048 context, 128 output tokens, temperature zero) produced truncated reasoning identifying the blue background and red square, but no valid final JSON. This is NOT a passed benchmark. Retried with `--think=false`, a 180-second timeout and JSON format; final result could not be observed because browser control repeatedly reported concurrent user changes and timed out. Inspect `qwen3-control-nothink.json` and `.log` in `/root/.ollama/bam-tests` before rerunning. The alias shares base weights and is NOT an independent reviewer.
+Worker mounts only synthetic `/input` (read-only) and project `/state` (read-write). No original collection mount, Docker socket, cloud secret or public NAS endpoint was added. The saved `compose.nas-8gb.yml` describes this observed test deployment; its relative build context assumes the NAS project layout, not an arbitrary checkout directory. Do not run the separate 16GB installer unchanged on this NAS.
 
-Uploaded credential-free `nas-review-worker.tar.gz` to the models directory; file presence verified in NAS Files. Extraction to `/root/.ollama/bam-worker` was submitted but not verified. The worker container has NOT been built or started. Do not deploy its original 12 GB Compose profile to this NAS. No collection photos were uploaded to NAS; only the synthetic control.
+## Model evidence
 
-Worker context is now configurable with `LOCAL_MODEL_CONTEXT`, including Compose propagation, constrained to 2048–32768. All 62 AIR unit tests pass locally; model behavior remains unverified. These are mock/boundary tests, not end-to-end NAS validation.
+`qwen2.5vl:3b` downloaded but was stopped without a completed result. Generic `qwen3-vl:2b` produced reasoning and timed out after 180 seconds even with thinking disabled; it did not pass JSON validation.
 
-## Resume without reinstalling
+Explicit `qwen3-vl:2b-instruct` downloaded successfully, digest `afc393e3572c07db0bc84aa460d928a16c75f3fbb9ca9e0dccc4fbd2dafb573e`, Q4_K_M. A bounded API request on a 96x96 control returned valid JSON identifying blue background, one red square, and count one in 188.32 seconds. Of that, image/prompt evaluation took 179.77 seconds, loading 4.07 seconds and generation 4.41 seconds. This establishes basic functionality, not production accuracy or throughput.
 
-1. Open existing Docker project `bam-local-review`, container Terminal `/bin/sh`. Inspect the bounded test result and logs; stop any leftover inference before new work. Do not print NAS authentication tokens or Ollama private keys.
-2. Confirm archive extraction. Build a separate review-worker service from `models/bam-worker`, Dockerfile `deploy/vision/Dockerfile.local-review`. Allocate at most 512 MiB initially, use project-only inbox/state mounts, and keep cloud fallback disabled during tests. Do not mount Docker socket or source collection.
-3. Benchmark strict JSON via Ollama API with `think:false`, measured duration and small context. Obtain valid known-control output before choosing the complete four-distinct-weight model ensemble. Small same-family models can share errors; agreement is not proof.
-4. Run labeled subtle-difference controls and one resident real-photo preview. Preserve provenance, unknowns, independent reviewer context, complete disagreement records and human approval.
-5. Only then connect collection matching, Neon/R2 and review UI. Validate authenticated ingest, persistence, approval and publication round trip; never delete synced OneDrive originals.
+The independent three-control benchmark uses 2048 context, 128 output tokens, two threads, zero temperature and a 240-second request timeout. One-square and two-square controls passed exactly in 201.29 and 202.37 seconds. Inspect `/state/controls-thread2/report.json` for the small-yellow-circle result before claiming all controls pass. Full raw outputs remain beside the report. No cloud fallback was used.
+
+A single existing 400x267, 10,886-byte DJI WebP preview was uploaded to `/state/76c9684c913c86ff06998faff748c3cf6b9e7dd7e33364d8c123b692520d5e16.webp`. Its local SHA256 is the filename stem. No original was uploaded, removed or changed. Real-photo local inference remains to be verified.
+
+## CI and remaining integration
+
+PR #8 Docker failure was caused by absent `PIPELINE_OPERATOR_TOKEN` during Compose interpolation. CI now generates a disposable random token, preserves the production required-token guard, validates all profiles and builds API, derivative and review images. Fix commit `22ba783e2cd17aa8640cfa70d4e08737894b1c31`; successful run 44152588710. Benchmark commit `c950f4200913b0356c846929d52fac38d2eb63dd` also passed all 62 tests and builds in run 44153599186.
+
+Four independent local reviewers have NOT been qualified. Aliases or different prompts over the same weights do not constitute independent models. The complete two-round/arbitration pipeline, Neon/R2 result persistence, collection matching and publication round trip are unverified. Replit is implementing outbound worker leases and receipts; dispatch remains disabled pending a dedicated worker credential and a verified round trip. Existing mocked tests do not establish live connectivity.
+
+Next: finish control scoring, run one bounded real-photo observation, qualify distinct small model weights sequentially, then integrate authenticated outbound jobs with long renewable leases and idempotent evidence receipts. Preserve model disagreements and human approval. Never bypass local rounds because inference is slow. OneDrive staging remains bounded to 100 files and 2 GiB; delete only pipeline-owned scratch after cloud verification, never synced originals.
