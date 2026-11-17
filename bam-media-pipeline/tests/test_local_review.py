@@ -1,4 +1,5 @@
 import json
+import io
 from pathlib import Path
 import sys
 import unittest
@@ -30,6 +31,28 @@ class Fake:
 
 
 class LocalReviewTests(unittest.TestCase):
+    def check_models(self, weight_sources):
+        tags = {'models': [{'name': name, 'digest': str(i)}
+                           for i, name in enumerate(MODELS.values())]}
+        infos = [{'capabilities': ['vision'], 'modelfile': source}
+                 for source in weight_sources]
+        with patch.object(lr, 'urlopen', return_value=io.BytesIO(json.dumps(tags).encode())):
+            with patch.object(lr.Ollama, 'post', side_effect=infos):
+                return lr.Ollama().check(MODELS)
+
+    def test_aliases_with_different_manifests_are_rejected(self):
+        same = 'FROM /models/blobs/sha256-' + 'a' * 64
+        with self.assertRaisesRegex(ValueError, 'sharing weights'):
+            self.check_models([same] * 4)
+
+    def test_unresolved_model_identity_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'weight identity'):
+            self.check_models(['FROM some-model:latest'] * 4)
+
+    def test_distinct_weight_evidence_is_retained(self):
+        result = self.check_models(['FROM /models/blobs/sha256-' + c * 64 for c in 'abcd'])
+        self.assertEqual(result['informed']['weight_blobs'], ['a' * 64])
+
     def run_review(self, fake, cloud=None):
         return lr.review({'private_gps_sentinel': 123}, 'preview.jpg', MODELS, fake, lambda *args: None, cloud)
 

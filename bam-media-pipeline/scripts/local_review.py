@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -155,10 +156,20 @@ class Ollama:
                 raise ValueError('Cloud-backed Ollama models are not local reviewers')
             if role != 'merger' and 'vision' not in info.get('capabilities', []):
                 raise ValueError(f'{role} model is not vision capable')
+            # A changed prompt/template creates a new manifest digest while retaining
+            # the same weights. Require resolved content-addressed FROM blobs too.
+            sources = re.findall(r'^FROM\s+(.+)$', info.get('modelfile', ''), re.MULTILINE)
+            blobs = [re.search(r'sha256[-:]([0-9a-f]{64})\s*$', s) for s in sources]
+            if not blobs or any(blob is None for blob in blobs):
+                raise ValueError('Cannot verify local model weight identity')
+            weights = sorted({blob.group(1) for blob in blobs})
             identities[role] = {'model': model, 'details': info.get('details', {}),
-                                'digest': installed[model], 'modified_at': info.get('modified_at')}
+                                'digest': installed[model], 'weight_blobs': weights,
+                                'modified_at': info.get('modified_at')}
         if len({installed[m] for m in models.values()}) != 4:
             raise ValueError('Four distinct local model digests required')
+        if len({tuple(i['weight_blobs']) for i in identities.values()}) != 4:
+            raise ValueError('Model aliases sharing weights are not independent reviewers')
         return identities
 
     def __call__(self, model, prompt, schema, image=None):
