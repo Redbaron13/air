@@ -106,6 +106,11 @@ async def log_to_gui(message: str):
 @app.on_event("startup")
 async def startup_event():
     logger.info("Starting API server; active_dir=%s allowed_origins=%s", ACTIVE_DIR, ALLOWED_ORIGINS)
+    try:
+        from server.schema_migrations import ensure_schema
+        await asyncio.to_thread(ensure_schema, os.getenv("DATABASE_URL"))
+    except Exception as e:
+        logger.warning("Schema check skipped (DB unavailable?): %s", e)
     asyncio.create_task(redis_log_subscriber())
 
 async def redis_log_subscriber():

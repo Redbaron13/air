@@ -36,6 +36,7 @@ services:
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=${REDIS_URL}
+      - NEON_DATABASE_URL=${NEON_DATABASE_URL:-}
       - OLLAMA_URL=
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
@@ -51,6 +52,7 @@ services:
     volumes:
       - ./server:/app/server
       - ./scripts:/app/scripts
+      - ./sql:/app/sql:ro
       - ./static:/app/static
       - ${ONEDRIVE_SOURCE_PATH}:/storage/onedrive_mount:ro
       - ${PIPELINE_STORAGE_PATH}/active:/storage/active

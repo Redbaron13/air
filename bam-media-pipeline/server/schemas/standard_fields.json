@@ -1,0 +1,359 @@
+{
+  "schema_version": "1.0.0",
+  "fields": [
+    {
+      "name": "classification.media_genre",
+      "type": "enum",
+      "allowed_values": [
+        "infrastructure",
+        "architecture",
+        "landscape",
+        "construction_site",
+        "vehicle",
+        "equipment",
+        "interior",
+        "people",
+        "nature",
+        "other"
+      ],
+      "filled_by": "model"
+    },
+    {
+      "name": "classification.shot_type",
+      "type": "enum",
+      "allowed_values": [
+        "aerial_nadir",
+        "aerial_oblique",
+        "aerial_low_oblique",
+        "ground_level",
+        "interior",
+        "detail_closeup",
+        "panorama"
+      ],
+      "filled_by": "model"
+    },
+    {
+      "name": "classification.scene_type",
+      "type": "enum",
+      "allowed_values": [
+        "indoor",
+        "outdoor"
+      ],
+      "filled_by": "model"
+    },
+    {
+      "name": "classification.camera_perspective",
+      "type": "string",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "classification.shot_type_from_exif",
+      "type": "string",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "classification.shot_type_matches_exif",
+      "type": "bool|null",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "classification.exif_basis",
+      "type": "list[string]",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "content.primary_subjects",
+      "type": "list[string]",
+      "allowed_values": null,
+      "filled_by": "model"
+    },
+    {
+      "name": "content.objects",
+      "type": "list[string]",
+      "allowed_values": null,
+      "filled_by": "model"
+    },
+    {
+      "name": "content.structures",
+      "type": "list[string]",
+      "allowed_values": null,
+      "filled_by": "model"
+    },
+    {
+      "name": "content.materials",
+      "type": "list[string]",
+      "allowed_values": null,
+      "filled_by": "model"
+    },
+    {
+      "name": "content.dominant_colors",
+      "type": "list[string]",
+      "allowed_values": null,
+      "filled_by": "model"
+    },
+    {
+      "name": "content.visual_mood",
+      "type": "list[string]",
+      "allowed_values": null,
+      "filled_by": "model"
+    },
+    {
+      "name": "content.tags",
+      "type": "list[string]",
+      "allowed_values": null,
+      "filled_by": "model"
+    },
+    {
+      "name": "content.description",
+      "type": "string (2 sentences)",
+      "allowed_values": null,
+      "filled_by": "model"
+    },
+    {
+      "name": "content.alt_text",
+      "type": "string (<=125 chars)",
+      "allowed_values": null,
+      "filled_by": "model"
+    },
+    {
+      "name": "photogrammetry.suitable_for_model",
+      "type": "bool",
+      "allowed_values": null,
+      "filled_by": "model"
+    },
+    {
+      "name": "photogrammetry.subject_coverage",
+      "type": "enum",
+      "allowed_values": [
+        "full",
+        "partial",
+        "none"
+      ],
+      "filled_by": "model"
+    },
+    {
+      "name": "photogrammetry.motion_blur",
+      "type": "enum",
+      "allowed_values": [
+        "none",
+        "slight",
+        "heavy"
+      ],
+      "filled_by": "model"
+    },
+    {
+      "name": "photogrammetry.texture_quality",
+      "type": "enum",
+      "allowed_values": [
+        "good",
+        "fair",
+        "poor"
+      ],
+      "filled_by": "model"
+    },
+    {
+      "name": "photogrammetry.notes",
+      "type": "string",
+      "allowed_values": null,
+      "filled_by": "model"
+    },
+    {
+      "name": "view.label",
+      "type": "string",
+      "allowed_values": null,
+      "filled_by": "model"
+    },
+    {
+      "name": "view.facing",
+      "type": "string (compass word or unknown)",
+      "allowed_values": null,
+      "filled_by": "model"
+    },
+    {
+      "name": "view.key_objects",
+      "type": "list[string]",
+      "allowed_values": null,
+      "filled_by": "model"
+    },
+    {
+      "name": "quality.sharpness",
+      "type": "enum",
+      "allowed_values": [
+        "sharp",
+        "soft",
+        "blurry"
+      ],
+      "filled_by": "model"
+    },
+    {
+      "name": "quality.exposure",
+      "type": "enum",
+      "allowed_values": [
+        "good",
+        "over",
+        "under"
+      ],
+      "filled_by": "model"
+    },
+    {
+      "name": "quality.usable",
+      "type": "bool",
+      "allowed_values": null,
+      "filled_by": "model"
+    },
+    {
+      "name": "confidence",
+      "type": "float 0..1",
+      "allowed_values": null,
+      "filled_by": "model"
+    },
+    {
+      "name": "capture.captured_at",
+      "type": "string",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "capture.latitude",
+      "type": "float",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "capture.longitude",
+      "type": "float",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "capture.altitude_m",
+      "type": "float",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "capture.gps_valid",
+      "type": "bool",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "capture.sensor_model",
+      "type": "string",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "capture.focal_length_mm",
+      "type": "float",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "capture.gimbal_pitch_deg",
+      "type": "float",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "capture.orientation",
+      "type": "string",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "capture.heading_deg",
+      "type": "float",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "identifier",
+      "type": "string|null",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "identifier_components",
+      "type": "object|null",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "indicators.model_candidate",
+      "type": "bool|null",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "indicators.progression",
+      "type": "string|null",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "indicators.view_group",
+      "type": "string|null",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "shoot.shoot_id",
+      "type": "string|null",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "shoot.related_shoots",
+      "type": "list[string]",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "review.agreement_score",
+      "type": "float 0..1",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "review.backend",
+      "type": "string",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "review.reasoning",
+      "type": "string",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "human.notes",
+      "type": "string",
+      "allowed_values": null,
+      "filled_by": "human"
+    },
+    {
+      "name": "human.feedback",
+      "type": "list",
+      "allowed_values": null,
+      "filled_by": "human"
+    },
+    {
+      "name": "human.training_candidate",
+      "type": "bool",
+      "allowed_values": null,
+      "filled_by": "human"
+    },
+    {
+      "name": "human.edited",
+      "type": "bool",
+      "allowed_values": null,
+      "filled_by": "human"
+    }
+  ]
+}
