@@ -1,9 +1,11 @@
 import importlib.util
 from datetime import datetime
+import os
 from pathlib import Path
 import sys
 import types
 import unittest
+from unittest.mock import patch
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "emit_manifest.py"
@@ -15,7 +17,8 @@ sys.modules.setdefault("psycopg2", fake_psycopg2)
 sys.modules.setdefault("psycopg2.extras", fake_extras)
 SPEC = importlib.util.spec_from_file_location("emit_manifest", MODULE_PATH)
 emit_manifest = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(emit_manifest)
+with patch.dict(os.environ, {"DATABASE_URL": "postgresql:///test"}):
+    SPEC.loader.exec_module(emit_manifest)
 
 
 class BuildManifestEntryTests(unittest.TestCase):
