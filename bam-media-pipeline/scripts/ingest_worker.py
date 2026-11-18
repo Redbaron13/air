@@ -8,7 +8,14 @@ from pathlib import Path
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)sZ %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("bam.ingest")
+
 DB_DSN = os.getenv("DATABASE_URL")
+ACTIVE_DIR = Path(os.getenv("ACTIVE_DIR", "/storage/active")).resolve()
 
 MEDIA_EXT = {
     ".jpg", ".jpeg", ".png", ".webp", ".avif", ".tif", ".tiff", ".heic", ".dng",
@@ -131,4 +138,3 @@ if __name__ == "__main__":
             print(f"[SKIP] No supported media files found for: {path}")
         for target in targets:
             ingest_file(target)
-
