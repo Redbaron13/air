@@ -89,7 +89,6 @@ def call_ollama(model: str, prompt: str, image_path: str = None):
         if not isinstance(response, dict) or not response:
             raise ValueError(f"{model} returned an empty or invalid JSON object")
         logger.info("Ollama response accepted; model=%s fields=%s", model, sorted(response.keys()))
-        return response
         return validate_output(response)
     except Exception as e:
         logger.exception("Ollama call failed; model=%s error=%s", model, e)

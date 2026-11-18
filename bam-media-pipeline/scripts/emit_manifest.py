@@ -4,7 +4,6 @@ import logging
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-DB_DSN = os.environ["DATABASE_URL"]
 def build_manifest_entry(asset: dict, copies: list[dict]) -> dict:
     variants = sorted({c["width"] for c in copies if c.get("width") is not None})
     formats = sorted({c["format"] for c in copies if c.get("format")})
@@ -46,7 +45,10 @@ logger = logging.getLogger("bam.manifest")
 
 def compile_manifest(output_path="/storage/exports/assets.manifest.json"):
     logger.info("Manifest compilation started; output_path=%s", output_path)
-    conn = psycopg2.connect(DB_DSN, cursor_factory=RealDictCursor)
+    dsn = os.getenv("DATABASE_URL")
+    if not dsn:
+        raise RuntimeError("DATABASE_URL is required for manifest compilation")
+    conn = psycopg2.connect(dsn, cursor_factory=RealDictCursor)
     cur = conn.cursor()
 
     # Retrieve all human-approved assets
@@ -81,33 +83,9 @@ def compile_manifest(output_path="/storage/exports/assets.manifest.json"):
         cur.execute("SELECT width, format FROM asset_copies WHERE parent_asset_id = %s", (aid,))
         copies = cur.fetchall()
 
-        # Extract unique widths and formats
-        variants = sorted(list(set([c["width"] for c in copies])))
-        formats = sorted(list(set([c["format"] for c in copies])))
         logger.info("Collected %d variants for asset_id=%s", len(copies), aid)
 
-        # Format timestamps safely
-        captured_date = a["captured_at"].strftime("%Y-%m-%d") if a["captured_at"] else "unknown"
-
-        manifest[aid] = {
-            "key": f"captures/{captured_date}-{a['shoot_id'] or 'general'}/{a['unique_stem']}",
-            "job": a["shoot_id"] or "BAM-DIRECT",
-            "captured": captured_date,
-            "sensor": a["sensor_model"],
-            "geo": {
-                "site": a.get("project_name") or "North Jersey Site",
-                "city": a.get("city") or "East Orange",
-                "state": a.get("state") or "NJ"
-            },
-            "serviceTags": a["service_tags"],
-            "describes": a["describes"],
-            "alt": a["alt"],
-            "credit": "Baron Aerial Media",
-            "variants": variants,
-            "formats": formats,
-            "lqip": a.get("lqip", ""),
-            "sha256": sha
-        }
+        manifest[aid] = build_manifest_entry(a, copies)
 
     # Ensure the export directory exists
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -120,4 +98,3 @@ def compile_manifest(output_path="/storage/exports/assets.manifest.json"):
 
 if __name__ == "__main__":
     compile_manifest()
-
