@@ -42,7 +42,9 @@ def ensure_schema(dsn, *, local=True, base_schema_path=None):
                     logger.info("Applying base schema %s", base)
                     cur.execute(base.read_text())
                     applied.append(base.name)
-                files = [MEDIA_INTEL] + ([SYNC_OUTBOX] if local else []) + [DRONE_META]
+                files = [MEDIA_INTEL, DRONE_META]
+                if local:
+                    files += [SYNC_OUTBOX, "sync_outbox_snapshot.sql"]
                 for name in files:
                     logger.info("Applying migration %s", name)
                     cur.execute((MIGRATIONS_DIR / name).read_text())

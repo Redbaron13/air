@@ -188,7 +188,9 @@ def batch_finalize(body: FinalizeBody | None = None):
     from server import finalize
     ids = body.asset_ids if body else None
     if ids is None:
-        ids = [r["asset_id"] for r in ra._fetch("SELECT asset_id FROM assets WHERE workflow_state = 'APPROVED'")]
+        ids = [r["asset_id"] for r in ra._fetch(
+            "SELECT asset_id FROM assets WHERE workflow_state IN %s AND identifier_locked IS NOT TRUE "
+            "AND jsonb_typeof(final_output) = 'object'", (finalize.ELIGIBLE_STATES,))]
     elif not ids:
         raise HTTPException(status_code=422, detail="asset_ids must not be empty")
     settings = _settings()

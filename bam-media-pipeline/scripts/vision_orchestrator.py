@@ -144,9 +144,11 @@ def call_ollama(model: str, prompt: str, image_path: str = None):
         logger.exception("Ollama call failed; model=%s error=%s", model, e)
         raise
 
-SCREENER_MODEL = os.getenv("BAM_SCREENER_MODEL", "moondream")
-VERIFIER_MODEL = os.getenv("BAM_VERIFIER_MODEL", "llava")
-JUDGE_MODEL = os.getenv("BAM_JUDGE_MODEL", "llama3.1")
+SCREENER_MODEL = (os.getenv("BAM_SCREENER_MODEL") or os.getenv("OLLAMA_SCREENER_MODEL")
+                  or os.getenv("OLLAMA_VISION_MODEL") or "moondream")
+VERIFIER_MODEL = (os.getenv("BAM_VERIFIER_MODEL") or os.getenv("OLLAMA_VERIFIER_MODEL")
+                  or os.getenv("OLLAMA_VISION_MODEL") or "llava")
+JUDGE_MODEL = os.getenv("BAM_JUDGE_MODEL") or os.getenv("OLLAMA_JUDGE_MODEL") or "llama3.1"
 BACKEND = f"ollama:{SCREENER_MODEL}+{VERIFIER_MODEL}+{JUDGE_MODEL}"
 _KIND_MAP = {"still": "still", "video": "video", "3d_model": "model3d"}
 
@@ -362,12 +364,24 @@ def persist_asset(conn, cur, ctx):
     a = ctx["asset"]
     aid = a["asset_id"]
     rec = build_final_record(ctx, a.get("final_output"))
+    content = rec["content"]
+    cur.execute("""
+        UPDATE assets SET final_output = %s, workflow_state = 'PENDING_HUMAN',
+            describes = CASE WHEN identifier_locked THEN %s ELSE describes END,
+            alt = CASE WHEN identifier_locked THEN %s ELSE alt END,
+            service_tags = CASE WHEN identifier_locked THEN %s::jsonb ELSE service_tags END
+        WHERE asset_id = %s
+    """, (json.dumps(rec, default=str), content["description"], content["alt_text"],
+          json.dumps(content["tags"]), aid))
     cur.execute("""
         INSERT INTO ai_evaluations (asset_id, screener_output, verifier_output, judge_output, agreement_score)
         VALUES (%s, %s, %s, %s, %s)
     """, (aid, json.dumps(ctx["screener"]), json.dumps(ctx["verifier"]), json.dumps(ctx["judge"]), ctx["score"]))
     if ctx["kind"] == "video":
-        for f in ctx["base_frames"] + ctx["detail_frames"]:
+        frames = ctx["base_frames"] + ctx["detail_frames"]
+        cur.execute("DELETE FROM video_frames WHERE asset_id = %s AND NOT (frame_index = ANY(%s::integer[]))",
+                    (aid, [f["frame_index"] for f in frames]))
+        for f in frames:
             cur.execute("""
                 INSERT INTO video_frames (asset_id, frame_index, time_s, pass_name, file_path, thumb_path, output)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -376,8 +390,6 @@ def persist_asset(conn, cur, ctx):
                     thumb_path = EXCLUDED.thumb_path, output = EXCLUDED.output
             """, (aid, f["frame_index"], f["time_s"], f["pass_name"], f["file_path"], f.get("thumb_path"),
                   json.dumps(f["output"])))
-    cur.execute("UPDATE assets SET final_output = %s, workflow_state = 'PENDING_HUMAN' WHERE asset_id = %s",
-                (json.dumps(rec, default=str), aid))
     if ctx["feedback"]:
         cur.execute("UPDATE assets SET rework_feedback = NULL WHERE asset_id = %s", (aid,))
     conn.commit()

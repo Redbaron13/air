@@ -165,6 +165,28 @@ class PostgresIntegrationTests(unittest.TestCase):
         self.assertEqual(rows, [("shoots", "upsert"), ("assets", "upsert"), ("training_examples", "upsert")])
         self.assertEqual(db_sync.sync_status()["pending"], 3)
 
+    def test_existing_library_is_backfilled_once_in_fk_order(self):
+        from server.schema_migrations import ensure_schema
+
+        self.seed()
+        # Simulate a library that predates the migration, with only a recent
+        # evaluation queued by a prior trigger-only installation.
+        self.run_sql(LOCAL, "TRUNCATE sync_outbox; DELETE FROM bam_local_migrations")
+        self.run_sql(LOCAL, "INSERT INTO ai_evaluations (asset_id) VALUES ('a1')")
+        self.run_sql(LOCAL, "INSERT INTO asset_copies (copy_id, parent_asset_id, size_tier, version_code, format, "
+                            "width, height, byte_size, sha256, r2_storage_key) "
+                            "VALUES ('copy1', 'a1', 'S', 'V1', 'jpg', 1, 1, 1, %s, 'copy.jpg')", ("b" * 64,))
+        ensure_schema(LOCAL, local=True)
+        ensure_schema(LOCAL, local=True)
+        rows = self.run_sql(LOCAL, "SELECT table_name FROM sync_outbox ORDER BY id", fetch=True)
+        self.assertEqual([table for (table,) in rows],
+                         ["shoots", "assets", "ai_evaluations", "asset_copies", "training_examples"])
+        r = db_sync.run_sync(batch_size=1)
+        self.assertEqual((r["remote"], r["pushed"]), ("ok", 5))
+        self.assertFalse(r["pending"])
+        self.assertEqual(self.run_sql(REMOTE, "SELECT parent_asset_id FROM asset_copies", fetch=True), [("a1",)])
+        self.assertEqual(self.run_sql(REMOTE, "SELECT asset_id FROM ai_evaluations", fetch=True), [("a1",)])
+
     def test_sync_update_delete_and_offline_recovery(self):
         self.seed()
         r = db_sync.run_sync()
