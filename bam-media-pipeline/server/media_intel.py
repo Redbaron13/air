@@ -49,9 +49,19 @@ SETTING_SPECS = [
     _spec("video_detail_interval_s", "Detail frame interval (s)", "Spacing of detail frames.", "float", 2, 0.25, 60),
     _spec("video_max_detail_frames", "Max detail frames", "Cap on detail frames per video.", "int", 60, 0, 500),
     _spec("video_thumb_edge", "Video thumbnail edge (px)", "Long edge of extracted frames.", "int", 320, 32, 2048),
+    _spec("drone_nadir_max_off_deg", "Nadir max off-vertical (deg)", "Gimbal pitch within this many degrees of straight down counts as nadir.", "float", 5, 0, 30),
+    _spec("drone_high_oblique_min_down_deg", "High oblique from (deg below horizon)", "Downward angle at/above which a non-nadir frame is a high oblique.", "float", 60, 1, 89),
+    _spec("drone_medium_oblique_min_down_deg", "Medium oblique from (deg below horizon)", "Downward angle at/above which a frame is a medium oblique.", "float", 30, 1, 89),
+    _spec("drone_low_oblique_min_down_deg", "Low oblique from (deg below horizon)", "Downward angle at/above which a frame is a low oblique; shallower is horizon.", "float", 10, 0, 89),
+    _spec("drone_alt_low_max_m", "Low altitude band up to (m AGL)", "Relative altitude at or below this is the low band.", "float", 30, 0, 5000),
+    _spec("drone_alt_high_min_m", "High altitude band from (m AGL)", "Relative altitude at or above this is the high band.", "float", 90, 0, 5000),
+    _spec("drone_orbit_tolerance_deg", "Orbit POI tolerance (deg)", "Camera yaw within this angle of the bearing to the subject centre marks an orbit/POI frame.", "float", 25, 1, 90),
+    _spec("flight_gap_s", "Flight split gap (s)", "A gap between consecutive shots longer than this starts a new flight.", "float", 600, 1, 86400),
+    _spec("geocode_enabled", "Reverse geocoding enabled", "1 = look up addresses for shoots/assets via the geocoder (cached, opt-in); 0 = never call it.", "int", 0, 0, 1, env="GEOCODE_ENABLED"),
 ]
 _SPEC_BY_KEY = {s["key"]: s for s in SETTING_SPECS}
 DEFAULT_SETTINGS = {s["key"]: s["default"] for s in SETTING_SPECS}
+_DRONE_KEYS = [k for k in DEFAULT_SETTINGS if k.startswith("drone_")]
 
 
 def _coerce(spec, value):
@@ -85,7 +95,18 @@ def validate_settings(d) -> dict:
     for spec in SETTING_SPECS:
         k = spec["key"]
         out[k] = _coerce(spec, d[k]) if k in d else spec["default"]
+    _check_drone_thresholds(out)
     return out
+
+
+def _check_drone_thresholds(s):
+    nadir_down = 90.0 - float(s["drone_nadir_max_off_deg"])
+    hi, mid, low = (float(s[k]) for k in ("drone_high_oblique_min_down_deg", "drone_medium_oblique_min_down_deg",
+                                           "drone_low_oblique_min_down_deg"))
+    if not nadir_down > hi > mid > low:
+        raise ValueError("drone angle thresholds must satisfy: 90-nadir_max_off > high_oblique > medium_oblique > low_oblique")
+    if float(s["drone_alt_low_max_m"]) > float(s["drone_alt_high_min_m"]):
+        raise ValueError("drone_alt_low_max_m must not exceed drone_alt_high_min_m")
 
 
 def load_settings(path=None) -> dict:
@@ -113,6 +134,11 @@ def load_settings(path=None) -> dict:
                 settings[k] = _coerce(spec, v)
             except ValueError:
                 pass
+    try:
+        _check_drone_thresholds(settings)
+    except ValueError:
+        for k in _DRONE_KEYS:
+            settings[k] = DEFAULT_SETTINGS[k]
     return settings
 
 
@@ -228,34 +254,192 @@ def _scope(assets, shoot_id, seed_asset_id, center, radius_m, default_radius, fi
 
 
 # ---------------------------------------------------------------- shot classification
-def classify_shot_from_exif(telemetry: dict) -> dict:
-    t = telemetry or {}
-    alt = _num(t.get("altitude_m"))
-    pitch = _num(t.get("gimbal_pitch_deg"))
+DRONE_ANGLES = ("nadir", "high_oblique", "medium_oblique", "low_oblique", "horizon")
+ALTITUDE_BANDS = ("low", "medium", "high")
+FACING_RELATIVE = ("front", "rear", "side")
+MAPPING_ROLES = ("nadir_grid", "oblique_ring", "orbit_poi", "corridor", "panorama",
+                 "video_nadir", "video_oblique", "video_horizon", "ground")
+COMPASS_POINTS = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+_ANGLE_COARSE = {"nadir": ("aerial_nadir", "nadir"), "high_oblique": ("aerial_oblique", "oblique"),
+                 "medium_oblique": ("aerial_oblique", "oblique"), "low_oblique": ("aerial_low_oblique", "oblique")}
+
+
+def norm_deg(d):
+    return None if d is None else float(d) % 360
+
+
+def angle_diff(a, b):
+    """Signed smallest difference a - b in (-180, 180]."""
+    d = (float(a) - float(b)) % 360
+    return d - 360 if d > 180 else d
+
+
+def compass_point(deg):
+    """8-point compass label (N, NE, ...) for a bearing in degrees, or None."""
+    if deg is None:
+        return None
+    return COMPASS_POINTS[int(((float(deg) % 360) + 22.5) // 45) % 8]
+
+
+def bearing_deg(lat1, lon1, lat2, lon2):
+    """Initial great-circle bearing from point 1 to point 2, degrees clockwise from true north."""
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dl = math.radians(lon2 - lon1)
+    y = math.sin(dl) * math.cos(p2)
+    x = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
+    return (math.degrees(math.atan2(y, x)) + 360) % 360
+
+
+def classify_drone_angle(pitch, settings=None):
+    """Gimbal pitch (DJI: -90 = straight down, 0 = horizon) -> (angle, basis). pitch None -> (None, None)."""
+    if pitch is None:
+        return None, None
+    s = dict(DEFAULT_SETTINGS, **(settings or {}))
+    down = max(-pitch, 0.0)
+    off = 90.0 - min(down, 90.0)
+    nadir_off = float(s["drone_nadir_max_off_deg"])
+    hi, mid, low = (float(s[k]) for k in ("drone_high_oblique_min_down_deg", "drone_medium_oblique_min_down_deg",
+                                           "drone_low_oblique_min_down_deg"))
+    if off <= nadir_off:
+        return "nadir", f"gimbal pitch {pitch:g} deg is {off:g} deg off vertical (<= {nadir_off:g}) -> nadir"
+    if down >= hi:
+        return "high_oblique", f"gimbal pitch {pitch:g} deg points {down:g} deg below horizon (>= {hi:g}, < nadir) -> high oblique"
+    if down >= mid:
+        return "medium_oblique", f"gimbal pitch {pitch:g} deg points {down:g} deg below horizon ({mid:g}-{hi:g}) -> medium oblique"
+    if down >= low:
+        return "low_oblique", f"gimbal pitch {pitch:g} deg points {down:g} deg below horizon ({low:g}-{mid:g}) -> low oblique"
+    return "horizon", f"gimbal pitch {pitch:g} deg is within {low:g} deg of the horizon -> horizon"
+
+
+def altitude_band(agl, settings=None):
+    """Altitude above ground/takeoff (m) -> low | medium | high, or None."""
+    if agl is None:
+        return None
+    s = dict(DEFAULT_SETTINGS, **(settings or {}))
+    if agl <= float(s["drone_alt_low_max_m"]):
+        return "low"
+    if agl >= float(s["drone_alt_high_min_m"]):
+        return "high"
+    return "medium"
+
+
+def relative_facing(yaw, ref_heading):
+    """Camera yaw vs. reference heading -> (front|rear|side, left|right|None, signed diff)."""
+    if yaw is None or ref_heading is None:
+        return None, None, None
+    diff = angle_diff(yaw, ref_heading)
+    if abs(diff) <= 45:
+        return "front", None, diff
+    if abs(diff) >= 135:
+        return "rear", None, diff
+    return "side", ("right" if diff > 0 else "left"), diff
+
+
+def _tnum(t, *keys):
+    for k in keys:
+        v = _num(t.get(k))
+        if v is not None:
+            return v
+    return None
+
+
+def classify_shot_from_exif(telemetry: dict, settings: dict | None = None, context: dict | None = None) -> dict:
+    """Shot taxonomy from stored telemetry.
+
+    Keys read from telemetry: gimbal_pitch_deg, altitude_m, rel_altitude_m, gimbal_yaw_deg (or heading_deg),
+    flight_yaw_deg, latitude/longitude, media_kind, shot_hint ('panorama'), travel_heading_deg,
+    subject_center {lat, lon}, corridor (bool). `context` overrides the last three (flight reconstruction).
+    Returns shot_type/camera_perspective/basis (legacy) plus drone_angle, facing_compass, facing_relative,
+    facing_side, facing_reference, viewed_from, altitude_band, mapping_role."""
+    t = dict(telemetry or {})
+    ctx = dict(context or {})
+    s = dict(DEFAULT_SETTINGS, **(settings or {}))
+    alt = _tnum(t, "altitude_m")
+    agl = _tnum(t, "rel_altitude_m", "rel_altitude")
+    pitch = _tnum(t, "gimbal_pitch_deg")
+    yaw = _tnum(t, "gimbal_yaw_deg", "gimbal_yaw", "heading_deg")
+    flight_yaw = _tnum(t, "flight_yaw_deg", "flight_yaw")
+    height = agl if agl is not None else alt
     basis = []
-    if pitch is not None:
-        if pitch <= -80:
-            basis.append(f"gimbal pitch {pitch:g} deg is near straight down")
-            return {"shot_type": "aerial_nadir", "camera_perspective": "nadir", "basis": basis}
-        if pitch <= -20:
-            if alt is not None and alt < 15:
-                basis.append(f"gimbal pitch {pitch:g} deg at low altitude {alt:g} m")
-                return {"shot_type": "aerial_low_oblique", "camera_perspective": "oblique", "basis": basis}
-            basis.append(f"gimbal pitch {pitch:g} deg is oblique")
-            return {"shot_type": "aerial_oblique", "camera_perspective": "oblique", "basis": basis}
-        if alt is not None and alt >= 15:
-            basis.append(f"near-horizontal pitch {pitch:g} deg at altitude {alt:g} m")
-            return {"shot_type": "aerial_low_oblique", "camera_perspective": "oblique", "basis": basis}
-        basis.append(f"near-horizontal pitch {pitch:g} deg at low/unknown altitude")
-        return {"shot_type": "ground_level", "camera_perspective": "ground", "basis": basis}
-    if alt is not None and alt > 15:
-        basis.append(f"altitude {alt:g} m suggests aerial; no gimbal pitch")
-        return {"shot_type": "unknown", "camera_perspective": "unknown", "basis": basis}
-    if alt is not None and alt <= 3:
-        basis.append(f"altitude {alt:g} m and no gimbal pitch suggest ground level")
-        return {"shot_type": "ground_level", "camera_perspective": "ground", "basis": basis}
-    basis.append("insufficient telemetry")
-    return {"shot_type": "unknown", "camera_perspective": "unknown", "basis": basis}
+    res = {"shot_type": "unknown", "camera_perspective": "unknown", "basis": basis, "drone_angle": None,
+           "facing_compass": None, "facing_relative": None, "facing_side": None, "facing_reference": None,
+           "viewed_from": None, "altitude_band": None, "mapping_role": None}
+    video = str(t.get("media_kind") or "").lower() == "video"
+
+    angle, why = classify_drone_angle(pitch, s)
+    if angle is not None:
+        basis.append(why)
+        res["drone_angle"] = angle
+        if angle in _ANGLE_COARSE:
+            st, cp = _ANGLE_COARSE[angle]
+            if angle in ("high_oblique", "medium_oblique") and height is not None and height < 15:
+                st = "aerial_low_oblique"
+                basis.append(f"low altitude {height:g} m -> low oblique shot type")
+        elif height is not None and height >= 15:
+            st, cp = "aerial_low_oblique", "oblique"
+            basis.append(f"near-horizontal at altitude {height:g} m -> aerial low oblique")
+        else:
+            st, cp = "ground_level", "ground"
+            basis.append("near-horizontal at low/unknown altitude -> ground level")
+            res["drone_angle"] = "horizon"
+        res.update(shot_type=st, camera_perspective=cp)
+    elif height is not None and height > 15:
+        basis.append(f"altitude {height:g} m suggests aerial; no gimbal pitch")
+    elif height is not None and height <= 3:
+        basis.append(f"altitude {height:g} m and no gimbal pitch suggest ground level")
+        res.update(shot_type="ground_level", camera_perspective="ground")
+    else:
+        basis.append("insufficient telemetry")
+
+    res["altitude_band"] = altitude_band(agl if agl is not None else (alt if res["shot_type"].startswith("aerial") else None), s)
+    if res["altitude_band"]:
+        basis.append(f"altitude {(agl if agl is not None else alt):g} m "
+                     f"({'relative' if agl is not None else 'GPS'}) -> {res['altitude_band']} band")
+
+    res["facing_compass"] = compass_point(yaw)
+    if yaw is not None:
+        basis.append(f"gimbal yaw {yaw:g} deg faces {res['facing_compass']}")
+    travel = ctx.get("travel_heading_deg", t.get("travel_heading_deg"))
+    travel = _num(travel)
+    ref, ref_name = (travel, "flight track heading") if travel is not None else (flight_yaw, "drone nose heading")
+    if ref is None and flight_yaw is not None:
+        ref, ref_name = flight_yaw, "drone nose heading"
+    rel, side, diff = relative_facing(yaw, ref)
+    if rel:
+        res.update(facing_relative=rel, facing_side=side, facing_reference=ref_name)
+        basis.append(f"camera yaw is {abs(diff):g} deg {'right' if diff > 0 else 'left'} of {ref_name} {ref:g} deg -> {rel}"
+                     + (f" ({side})" if side else ""))
+    center = ctx.get("subject_center") or t.get("subject_center")
+    lat, lon = _num(t.get("latitude")), _num(t.get("longitude"))
+    to_center = None
+    if isinstance(center, dict) and lat is not None and lon is not None and center.get("lat") is not None:
+        clat, clon = float(center["lat"]), float(center["lon"])
+        if haversine_m(lat, lon, clat, clon) >= 3:
+            to_center = bearing_deg(lat, lon, clat, clon)
+            res["viewed_from"] = compass_point(bearing_deg(clat, clon, lat, lon))
+            basis.append(f"camera is on the {res['viewed_from']} side of the subject centre")
+
+    group = "nadir" if res["drone_angle"] == "nadir" else ("horizon" if res["drone_angle"] == "horizon" else "oblique")
+    aerial = res["shot_type"].startswith("aerial") or (res["drone_angle"] is not None and res["shot_type"] != "ground_level")
+    tol = float(s["drone_orbit_tolerance_deg"])
+    if str(t.get("shot_hint") or "").lower() == "panorama" and aerial:
+        role, why = "panorama", "shot hint: panorama"
+    elif not aerial:
+        role, why = ("ground", "not an aerial/drone shot") if res["shot_type"] == "ground_level" else (None, None)
+    elif video:
+        role, why = f"video_{group}", f"video clip with {group} camera angle"
+    elif group == "nadir":
+        role, why = "nadir_grid", "straight-down frame suits mapping grid"
+    elif to_center is not None and yaw is not None and abs(angle_diff(yaw, to_center)) <= tol:
+        role, why = "orbit_poi", f"camera yaw within {tol:g} deg of bearing to subject centre"
+    elif ctx.get("corridor") or t.get("corridor"):
+        role, why = "corridor", "oblique frame along a straight flight track"
+    else:
+        role, why = "oblique_ring", "oblique frame, no orbit centre or straight corridor detected"
+    res["mapping_role"] = role
+    if why:
+        basis.append(f"mapping role {role}: {why}")
+    return res
 
 
 # ---------------------------------------------------------------- shoots
@@ -674,3 +858,197 @@ def merge_human_edit(before, after):
         if isinstance(before, dict) and k in before:
             merged[k] = copy.deepcopy(before[k])
     return merged
+
+
+# ---------------------------------------------------------------- flight reconstruction
+MIN_MOVE_M = 2.0
+
+
+def _iso_z(d):
+    return d.isoformat() + "Z" if d else None
+
+
+def build_flight_tracks(assets, settings=None) -> dict:
+    """Reconstruct flights from timed assets (a shoot, or any set).
+
+    Assets without a capture time are listed in `untimed`. A gap longer than `flight_gap_s` between consecutive
+    shots starts a new flight. Returns {"flights": [summary], "points": [point], "untimed": [asset_id]}."""
+    s = dict(DEFAULT_SETTINGS, **(settings or {}))
+    gap = float(s["flight_gap_s"])
+    timed, untimed = [], []
+    for a in assets or []:
+        d = _dt(a.get("captured_at"))
+        (timed if d else untimed).append((d, a))
+    timed.sort(key=lambda x: (x[0], str(x[1].get("asset_id"))))
+    groups, cur, last = [], [], None
+    for d, a in timed:
+        if last is not None and (d - last).total_seconds() > gap:
+            groups.append(cur)
+            cur = []
+        cur.append((d, a))
+        last = d
+    if cur:
+        groups.append(cur)
+
+    flights, points = [], []
+    for fi, grp in enumerate(groups, 1):
+        t0 = grp[0][0]
+        fpts, prev, prev_gps, heading, total_d = [], None, None, None, 0.0
+        speeds = []
+        for seq, (d, a) in enumerate(grp, 1):
+            gps = _gps(a)
+            p = {"asset_id": a.get("asset_id"), "flight_index": fi, "seq": seq, "total": len(grp),
+                 "captured_at": _iso_z(d), "elapsed_s": (d - t0).total_seconds(),
+                 "dt_prev_s": (d - prev).total_seconds() if prev else None,
+                 "latitude": float(a["latitude"]) if gps else None, "longitude": float(a["longitude"]) if gps else None,
+                 "rel_altitude_m": _num(a.get("rel_altitude")), "dist_prev_m": None, "speed_mps": None,
+                 "heading_deg": None}
+            if gps and prev_gps is not None:
+                dist = haversine_m(prev_gps[0], prev_gps[1], float(a["latitude"]), float(a["longitude"]))
+                p["dist_prev_m"] = round(dist, 2)
+                total_d += dist
+                if p["dt_prev_s"]:
+                    p["speed_mps"] = round(dist / p["dt_prev_s"], 2)
+                    speeds.append(p["speed_mps"])
+                if dist >= MIN_MOVE_M:
+                    heading = bearing_deg(prev_gps[0], prev_gps[1], float(a["latitude"]), float(a["longitude"]))
+            p["heading_deg"] = round(heading, 1) if heading is not None else None
+            if gps:
+                prev_gps = (float(a["latitude"]), float(a["longitude"]))
+            prev = d
+            fpts.append(p)
+        first_h = next((p["heading_deg"] for p in fpts if p["heading_deg"] is not None), None)
+        for p in fpts:
+            if p["heading_deg"] is not None:
+                break
+            p["heading_deg"] = first_h
+        gps_pts = [p for p in fpts if p["latitude"] is not None]
+        end_d = grp[-1][0]
+        dur = (end_d - t0).total_seconds()
+        summ = {"flight_index": fi, "count": len(grp), "start_at": _iso_z(t0), "end_at": _iso_z(end_d),
+                "duration_s": dur, "total_distance_m": round(total_d, 1),
+                "avg_speed_mps": round(total_d / dur, 2) if dur > 0 else None,
+                "max_speed_mps": max(speeds) if speeds else None,
+                "start": {"latitude": gps_pts[0]["latitude"], "longitude": gps_pts[0]["longitude"]} if gps_pts else None,
+                "end": {"latitude": gps_pts[-1]["latitude"], "longitude": gps_pts[-1]["longitude"]} if gps_pts else None,
+                "bbox": ({"min_lat": min(p["latitude"] for p in gps_pts), "max_lat": max(p["latitude"] for p in gps_pts),
+                          "min_lon": min(p["longitude"] for p in gps_pts), "max_lon": max(p["longitude"] for p in gps_pts)}
+                         if gps_pts else None),
+                "first_asset_id": fpts[0]["asset_id"], "last_asset_id": fpts[-1]["asset_id"]}
+        straight = None
+        if len(gps_pts) >= 2 and total_d > 0:
+            straight = haversine_m(gps_pts[0]["latitude"], gps_pts[0]["longitude"],
+                                   gps_pts[-1]["latitude"], gps_pts[-1]["longitude"]) / total_d
+        summ["straightness"] = round(straight, 3) if straight is not None else None
+        summ["is_linear"] = bool(straight is not None and straight >= 0.8 and total_d >= 50 and len(gps_pts) >= 3)
+        flights.append(summ)
+        points.extend(fpts)
+    return {"flights": flights, "points": points, "untimed": [a.get("asset_id") for _, a in untimed]}
+
+
+def locate_in_flight(track: dict, asset_id) -> dict | None:
+    """This asset's place in a reconstructed track: N of M, offsets and neighbour ids (None if not timed)."""
+    pts = track.get("points") or []
+    for i, p in enumerate(pts):
+        if p["asset_id"] != asset_id:
+            continue
+        same = [q for q in pts if q["flight_index"] == p["flight_index"]]
+        k = p["seq"] - 1
+        prev_p = same[k - 1] if k > 0 else None
+        next_p = same[k + 1] if k + 1 < len(same) else None
+        flight = next(f for f in track["flights"] if f["flight_index"] == p["flight_index"])
+        return {
+            "flight_index": p["flight_index"], "flight_count": len(track["flights"]), "seq": p["seq"],
+            "total": p["total"], "elapsed_s": p["elapsed_s"], "dt_prev_s": p["dt_prev_s"],
+            "dt_next_s": (next_p["elapsed_s"] - p["elapsed_s"]) if next_p else None,
+            "dist_prev_m": p["dist_prev_m"], "speed_mps": p["speed_mps"], "heading_deg": p["heading_deg"],
+            "heading_compass": compass_point(p["heading_deg"]),
+            "prev_asset_id": prev_p["asset_id"] if prev_p else None,
+            "next_asset_id": next_p["asset_id"] if next_p else None,
+            "flight": flight,
+        }
+    return None
+
+
+def flight_context(track: dict, asset_id) -> dict:
+    """Context for classify_shot_from_exif: travel heading at this shot + whether the flight is a straight corridor."""
+    loc = locate_in_flight(track, asset_id)
+    if not loc:
+        return {}
+    return {"travel_heading_deg": loc["heading_deg"], "corridor": bool(loc["flight"].get("is_linear"))}
+
+
+# ---------------------------------------------------------------- GUI payload builders
+def capture_view(asset: dict) -> dict:
+    """Capture time for display: UTC + camera-local ISO with offset (offset only when the EXIF carried one)."""
+    from server import exif_meta
+    asset = asset or {}
+    d = _dt(asset.get("captured_at"))
+    off_txt = asset.get("capture_utc_offset") or None
+    mins = exif_meta.parse_offset(off_txt) if off_txt else None
+    out = {"captured_at_utc": _iso_z(d), "captured_at": None, "utc_offset": None, "tz_known": mins is not None,
+           "local_display": None}
+    if d is None:
+        return out
+    if mins is None:
+        out.update(captured_at=_iso_z(d), local_display=d.strftime("%Y-%m-%d %H:%M:%S") + " UTC (camera timezone unknown)")
+        return out
+    local = d + timedelta(minutes=mins)
+    off = exif_meta.format_offset(mins)
+    out.update(captured_at=local.isoformat() + off, utc_offset=off,
+               local_display=local.strftime("%Y-%m-%d %H:%M:%S") + f" (UTC{off})")
+    return out
+
+
+def _flt(v):
+    n = _num(v)
+    return None if n is None else n
+
+
+def telemetry_from_asset(asset: dict) -> dict:
+    """Classifier telemetry from an assets row."""
+    a = asset or {}
+    alt = _flt(a.get("altitude_meters"))
+    return {"gimbal_pitch_deg": _flt(a.get("gimbal_pitch")), "gimbal_yaw_deg": _flt(a.get("gimbal_yaw")),
+            "flight_yaw_deg": _flt(a.get("flight_yaw")), "rel_altitude_m": _flt(a.get("rel_altitude")),
+            "altitude_m": alt if alt else None,
+            "latitude": _flt(a.get("latitude")) if _gps(a) else None,
+            "longitude": _flt(a.get("longitude")) if _gps(a) else None,
+            "media_kind": "video" if str(a.get("media_kind") or "").lower() == "video" else "still"}
+
+
+def asset_capture_meta(asset, shoot_assets, settings=None, address=None, subject_center=None) -> dict:
+    """One-call GUI payload: capture time, position, address, camera, drone fields, taxonomy, flight position, raw EXIF."""
+    a = asset or {}
+    s = dict(DEFAULT_SETTINGS, **(settings or {}))
+    track = build_flight_tracks(shoot_assets or [a], s)
+    flight = locate_in_flight(track, a.get("asset_id"))
+    ctx = flight_context(track, a.get("asset_id"))
+    if subject_center:
+        ctx["subject_center"] = subject_center
+    tax = classify_shot_from_exif(telemetry_from_asset(a), s, ctx)
+    gps = _gps(a)
+    raw = a.get("raw_exif")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raw = None
+    return {
+        "capture": capture_view(a),
+        "location": {"latitude": float(a["latitude"]) if gps else None, "longitude": float(a["longitude"]) if gps else None,
+                     "altitude_m": _flt(a.get("altitude_meters")) if gps else None,
+                     "rel_altitude_m": _flt(a.get("rel_altitude")), "gps_valid": bool(gps),
+                     "address": address if isinstance(address, dict) else None},
+        "camera": {"make": a.get("camera_make"), "model": a.get("sensor_model"), "lens_model": a.get("lens_model"),
+                   "focal_length": a.get("focal_length"), "iso": a.get("iso"), "shutter_speed": a.get("shutter_speed"),
+                   "aperture": _flt(a.get("aperture")), "serial": a.get("camera_serial")},
+        "drone": {"gimbal_pitch_deg": _flt(a.get("gimbal_pitch")), "gimbal_yaw_deg": _flt(a.get("gimbal_yaw")),
+                  "flight_yaw_deg": _flt(a.get("flight_yaw")), "flight_roll_deg": _flt(a.get("flight_roll")),
+                  "rel_altitude_m": _flt(a.get("rel_altitude")), "abs_altitude_m": _flt(a.get("abs_altitude")),
+                  **{k: tax[k] for k in ("shot_type", "drone_angle", "facing_compass", "facing_relative", "facing_side",
+                                         "facing_reference", "viewed_from", "altitude_band", "mapping_role")},
+                  "basis": tax["basis"]},
+        "flight": flight,
+        "raw_exif": raw if isinstance(raw, dict) else {},
+    }

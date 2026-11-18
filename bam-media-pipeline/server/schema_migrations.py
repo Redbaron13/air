@@ -8,6 +8,7 @@ logger = logging.getLogger("bam.schema")
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 MEDIA_INTEL = "m002_media_intel.sql"
 SYNC_OUTBOX = "m003_sync_outbox.sql"
+DRONE_META = "m004_drone_meta.sql"
 _LOCK_KEY = 7243901123
 
 
@@ -41,7 +42,7 @@ def ensure_schema(dsn, *, local=True, base_schema_path=None):
                     logger.info("Applying base schema %s", base)
                     cur.execute(base.read_text())
                     applied.append(base.name)
-                files = [MEDIA_INTEL] + ([SYNC_OUTBOX] if local else [])
+                files = [MEDIA_INTEL] + ([SYNC_OUTBOX] if local else []) + [DRONE_META]
                 for name in files:
                     logger.info("Applying migration %s", name)
                     cur.execute((MIGRATIONS_DIR / name).read_text())

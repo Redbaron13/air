@@ -97,3 +97,40 @@ class IngestWorkerHelperTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IngestDroneMetaTests(unittest.TestCase):
+    DUMP = {"Make": "DJI", "Model": "FC3030", "GimbalPitchDegree": "-90.0", "GimbalYawDegree": "+45.0",
+            "FlightYawDegree": "+40.0", "RelativeAltitude": "+70.5", "ISO": 100, "ExposureTime": 0.002,
+            "DateTimeOriginal": "2025:05:10 12:00:00", "OffsetTimeOriginal": "+02:00",
+            "GPSLatitude": 40.5, "GPSLongitude": -70.5}
+
+    def test_extract_exif_captures_drone_fields_and_raw_dump(self):
+        with patch.object(ingest_worker.exif_meta, "read_exif_dump", return_value=self.DUMP):
+            meta = ingest_worker.extract_exif("a.jpg")
+        self.assertEqual((meta["gimbal_pitch"], meta["gimbal_yaw"], meta["flight_yaw"], meta["rel_altitude"]),
+                         (-90.0, 45.0, 40.0, 70.5))
+        self.assertEqual(meta["captured_at"], "2025-05-10 10:00:00")
+        self.assertEqual(meta["capture_utc_offset"], "+02:00")
+        self.assertEqual(meta["raw_exif"]["Make"], "DJI")
+        self.assertEqual((meta["lat"], meta["lon"]), (40.5, -70.5))
+
+    def test_extract_exif_never_raises(self):
+        with patch.object(ingest_worker.exif_meta, "read_exif_dump", side_effect=RuntimeError("x")):
+            self.assertEqual(ingest_worker.extract_exif("a.jpg"), {})
+        with patch.object(ingest_worker.exif_meta, "read_exif_dump", return_value={}):
+            self.assertEqual(ingest_worker.extract_exif("a.jpg"), {})
+
+    def test_insert_placeholders_match_columns_and_params(self):
+        connection = MagicMock()
+        cursor = connection.__enter__.return_value.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = None
+        with patch.object(ingest_worker, "get_db", return_value=connection), patch.object(
+            ingest_worker, "compute_sha256", return_value="abcdef1234567890"
+        ), patch.object(ingest_worker.exif_meta, "read_exif_dump", return_value=self.DUMP):
+            ingest_worker.ingest_file("a.jpg")
+        sql, values = cursor.execute.call_args.args
+        cols = sql.split("INSERT INTO assets (")[1].split(")")[0]
+        self.assertEqual(len([c for c in cols.split(",") if c.strip()]), len(values) + 1)  # + literal 'INGESTED'
+        self.assertEqual(sql.count("%s"), len(values))
+        self.assertIn('"Make": "DJI"', values[13])

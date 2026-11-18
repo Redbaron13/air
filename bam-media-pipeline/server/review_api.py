@@ -286,6 +286,28 @@ def _asset_intel(a, assets, cfg):
     return out
 
 
+def _address_for(a, shoot):
+    """Stored address (asset, record, shoot) else a cache-only lookup; never calls the network."""
+    cands = [a.get("address"), (a.get("final_output") or {}).get("address") if isinstance(a.get("final_output"), dict) else None,
+             (shoot or {}).get("address")]
+    for c in cands:
+        if isinstance(c, dict) and any(c.values()):
+            return c
+    try:
+        from server import geocode
+        return geocode.cached_address(a.get("latitude"), a.get("longitude")) if has_gps(a) else None
+    except Exception:
+        return None
+
+
+def capture_meta_for(a, shoot, shoot_assets, cfg):
+    try:
+        return media_intel.asset_capture_meta(a, shoot_assets, cfg, address=_address_for(a, shoot))
+    except Exception as exc:
+        logger.warning("capture meta failed for %s: %s", a.get("asset_id"), exc)
+        return None
+
+
 @router.get("/assets/{asset_id}")
 def asset_detail(asset_id: str):
     assets = _fetch(ASSET_SQL)
@@ -320,6 +342,7 @@ def asset_detail(asset_id: str):
         "feedback": a.get("feedback"),
         "training_candidate": bool(a.get("training_candidate")),
         "scene_group": a.get("scene_group"),
+        "capture_meta": capture_meta_for(a, shoots.get(a["shoot_id"]), [a] + same_shoot, cfg),
         "frame_count": int(frame_count[int()]["n"]) if frame_count else int(),
         "model_candidates": intel["model_candidates"],
         "progression": intel["progression"],

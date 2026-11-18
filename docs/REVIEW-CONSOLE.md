@@ -30,13 +30,15 @@ All endpoints live under `/api/review`. Searching and grouping use only stored d
 - `GET /settings` – current settings, defaults and the `specs` that drive the settings form.
 - `PUT /settings` – validate (422 on bad values) and save settings; `DELETE /settings` resets them.
 - `POST /assets/{id}/decision` – approve/reject/rework; accepts `final_output` (human-edited record, identifier fields stay locked), `notes`, `feedback`, `training_candidate` and `reprocess_feedback`; edits and flags create training examples.
-- `GET /assets/{id}` – asset detail incl. final output, identifier, indicators, notes, feedback, frame count, model-candidate and progression snippets.
+- `GET /assets/{id}` – asset detail (now with a `capture_meta` block: capture time with timezone, lat/lon, address, camera, drone fields, shot taxonomy, flight position, raw EXIF) incl. final output, identifier, indicators, notes, feedback, frame count, model-candidate and progression snippets.
 - `GET /assets/{id}/frames` – extracted video frames with thumb/image URLs and per-frame output.
 - `GET /assets/{id}/frames/{frame_index}/thumb` and `/image` – frame files, served only from inside `EXPORTS_DIR/frames`.
 - `GET /assets/{id}/media` – source media with HTTP range support for video playback.
 - `GET /intel/search` – ILIKE search over final output, description, alt, notes, identifier and filename (`q`, `kind`, `shoot`, `state`, `shot_type`, `genre`, `limit`).
 - `GET /intel/model-candidates` – photo sets suitable for 3D models (`shoot_id`, `asset_id`, `lat`, `lon`, `radius_m`).
 - `GET /intel/progression` – locations visited repeatedly, with before/after indicators (same filters).
+- `GET /intel/flight/{asset_id}` (optional `?shoot_id=`) – reconstructed flight track for the asset's shoot: `flights` (summaries), this asset's `flight`, its `points`, `position` (N of M, `elapsed_s`, `dt_prev_s`, `dt_next_s`, `dist_prev_m`, `speed_mps`, `heading_deg`, `prev_asset_id`/`next_asset_id`), `neighbors` and `untimed` ids. 404 for unknown assets.
+- `GET /intel/flight?shoot_id=` – same payload for a whole shoot (all flights, `position` null).
 - `GET /intel/view-groups` – groups of captures showing the same view.
 - `POST /intel/refresh` – recompute stored indicators for all assets.
 - `POST /intel/shoots/split` – split a shoot into two groups of assets (`shoot_id`, `group_a`, `group_b`, `project_name_b`).
@@ -47,3 +49,9 @@ All endpoints live under `/api/review`. Searching and grouping use only stored d
 - `GET /intel/training/export` – NDJSON training examples (`only=all|flagged|edited`, `limit`).
 - `GET /intel/sync/status` – pending/failed outbox state for the cloud database sync.
 - `POST /intel/sync/run` – run a sync now; returns `remote: "unreachable"` instead of failing when offline.
+
+### Drone settings and address lookup
+
+Settings (editable in the Settings tab, saved in `review_settings.json`): `drone_nadir_max_off_deg` (5), `drone_high_oblique_min_down_deg` (60), `drone_medium_oblique_min_down_deg` (30), `drone_low_oblique_min_down_deg` (10), `drone_alt_low_max_m` (30), `drone_alt_high_min_m` (90), `drone_orbit_tolerance_deg` (25), `flight_gap_s` (600) and `geocode_enabled` (0/1, env `GEOCODE_ENABLED`). The angle thresholds must stay ordered (90 - nadir off > high > medium > low) or the save is rejected with 422.
+
+Reverse geocoding is opt-in: set `GEOCODE_ENABLED=1` (optionally `GEOCODE_URL`, `GEOCODE_USER_AGENT`, `GEOCODE_TIMEOUT`). Lookups run at finalize time only (1 request/s, results cached per ~11 m in `EXPORTS_DIR/geocode_cache.json`); read endpoints use the cache and never touch the network. `/intel/sync/status` and `/intel/sync/run` return generic error text; details are in the server log.

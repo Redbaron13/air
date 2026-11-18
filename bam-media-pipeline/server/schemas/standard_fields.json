@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "fields": [
     {
       "name": "classification.media_genre",
@@ -354,6 +354,240 @@
       "type": "bool",
       "allowed_values": null,
       "filled_by": "human"
+    },
+    {
+      "name": "capture.captured_at_local",
+      "type": "string|null",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "capture.utc_offset",
+      "type": "string|null",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "capture.gimbal_yaw_deg",
+      "type": "number|null",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "capture.flight_yaw_deg",
+      "type": "number|null",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "capture.flight_roll_deg",
+      "type": "number|null",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "capture.rel_altitude_m",
+      "type": "number|null",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "capture.camera_make",
+      "type": "string|null",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "capture.lens_model",
+      "type": "string|null",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "capture.iso",
+      "type": "int|null",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "capture.shutter_speed",
+      "type": "string|null",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "capture.aperture",
+      "type": "number|null",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "capture.camera_serial",
+      "type": "string|null",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "classification.drone_angle",
+      "type": "enum|null",
+      "allowed_values": [
+        "nadir",
+        "high_oblique",
+        "medium_oblique",
+        "low_oblique",
+        "horizon"
+      ],
+      "filled_by": "exif"
+    },
+    {
+      "name": "classification.facing_compass",
+      "type": "string|null",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "classification.facing_relative",
+      "type": "enum|null",
+      "allowed_values": [
+        "front",
+        "rear",
+        "side"
+      ],
+      "filled_by": "exif"
+    },
+    {
+      "name": "classification.facing_side",
+      "type": "string|null",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "classification.facing_reference",
+      "type": "string|null",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "classification.viewed_from",
+      "type": "string|null",
+      "allowed_values": null,
+      "filled_by": "exif"
+    },
+    {
+      "name": "classification.altitude_band",
+      "type": "enum|null",
+      "allowed_values": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "filled_by": "exif"
+    },
+    {
+      "name": "classification.mapping_role",
+      "type": "enum|null",
+      "allowed_values": [
+        "nadir_grid",
+        "oblique_ring",
+        "orbit_poi",
+        "corridor",
+        "panorama",
+        "video_nadir",
+        "video_oblique",
+        "video_horizon",
+        "ground"
+      ],
+      "filled_by": "exif"
+    },
+    {
+      "name": "address.display_name",
+      "type": "string|null",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "address.road",
+      "type": "string|null",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "address.city",
+      "type": "string|null",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "address.county",
+      "type": "string|null",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "address.state",
+      "type": "string|null",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "address.postcode",
+      "type": "string|null",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "address.country",
+      "type": "string|null",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "flight.flight_index",
+      "type": "int|null",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "flight.seq",
+      "type": "int|null",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "flight.total",
+      "type": "int|null",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "flight.elapsed_s",
+      "type": "number|null",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "flight.dt_prev_s",
+      "type": "number|null",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "flight.dist_prev_m",
+      "type": "number|null",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "flight.speed_mps",
+      "type": "number|null",
+      "allowed_values": null,
+      "filled_by": "pipeline"
+    },
+    {
+      "name": "flight.heading_deg",
+      "type": "number|null",
+      "allowed_values": null,
+      "filled_by": "pipeline"
     }
   ]
 }

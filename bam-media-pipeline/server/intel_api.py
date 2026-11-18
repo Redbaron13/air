@@ -164,6 +164,9 @@ def split_shoot(body: SplitBody):
     with ra._conn() as conn:
         result = finalize.apply_split(conn, body.shoot_id, a, b, _settings(), project_name_b=body.project_name_b)
         conn.commit()
+    if isinstance(result, dict) and result.get("error"):
+        logger.warning("Sync run error: %s", result["error"])
+        result = dict(result, error="sync failed; see server log")
     return ra._clean(result)
 
 
@@ -174,6 +177,9 @@ def reassign_shoot(body: ReassignBody):
     with ra._conn() as conn:
         result = finalize.reassign_shoot(conn, body.shoot_id, _settings(), radius_m=body.radius_m)
         conn.commit()
+    if isinstance(result, dict) and result.get("error"):
+        logger.warning("Sync run error: %s", result["error"])
+        result = dict(result, error="sync failed; see server log")
     return ra._clean(result)
 
 
@@ -226,6 +232,55 @@ def training_export(only: str = Query("all", pattern="^(all|flagged|edited)$"),
     return Response(content=body, media_type="application/x-ndjson")
 
 
+FLIGHT_COLS = ("asset_id, original_filename, shoot_id, captured_at, latitude, longitude, rel_altitude, "
+               "capture_utc_offset")
+
+
+def _flight_assets(shoot_id):
+    return ra._fetch(f"SELECT {FLIGHT_COLS} FROM assets WHERE shoot_id = %s ORDER BY captured_at, asset_id", (shoot_id,))
+
+
+def _flight_payload(assets, asset_id=None):
+    track = media_intel.build_flight_tracks(assets, _settings())
+    pos = media_intel.locate_in_flight(track, asset_id) if asset_id else None
+    names = {a["asset_id"]: a.get("original_filename") for a in assets}
+    points = track["points"]
+    if pos:
+        points = [p for p in points if p["flight_index"] == pos["flight_index"]]
+    points = [dict(p, filename=names.get(p["asset_id"])) for p in points]
+    neighbors = {}
+    if pos:
+        for key, nid in (("prev", pos["prev_asset_id"]), ("next", pos["next_asset_id"])):
+            neighbors[key] = ({"asset_id": nid, "filename": names.get(nid)} if nid else None)
+    return {"asset_id": asset_id, "flights": track["flights"], "flight": pos["flight"] if pos else None,
+            "points": points, "position": pos, "neighbors": neighbors, "untimed": track["untimed"]}
+
+
+@router.get("/flight")
+def flight_for_shoot(shoot_id: str = Query(..., min_length=1, max_length=64)):
+    assets = _flight_assets(shoot_id)
+    out = _flight_payload(assets)
+    out["shoot_id"] = shoot_id
+    return ra._clean(out)
+
+
+@router.get("/flight/{asset_id}")
+def flight_for_asset(asset_id: str, shoot_id: str | None = Query(None, max_length=64)):
+    sid = shoot_id
+    if not sid:
+        rows = ra._fetch("SELECT shoot_id FROM assets WHERE asset_id = %s", (asset_id,))
+        if not rows:
+            raise HTTPException(status_code=ra.NOT_FOUND, detail="Asset not found")
+        sid = rows[int()].get("shoot_id")
+    assets = _flight_assets(sid) if sid else ra._fetch(
+        f"SELECT {FLIGHT_COLS} FROM assets WHERE asset_id = %s", (asset_id,))
+    if not any(a["asset_id"] == asset_id for a in assets):
+        raise HTTPException(status_code=ra.NOT_FOUND, detail="Asset not found in shoot")
+    out = _flight_payload(assets, asset_id)
+    out["shoot_id"] = sid
+    return ra._clean(out)
+
+
 @router.get("/sync/status")
 def sync_status():
     from server import db_sync
@@ -239,5 +294,8 @@ async def sync_run():
         result = await asyncio.to_thread(db_sync.run_sync)
     except Exception as exc:
         logger.warning("Sync run failed: %s", exc)
-        return {"pushed": int(), "pending": None, "remote": "unreachable", "error": str(exc)[:2 * (5 + 5) ** 2]}
+        return {"pushed": int(), "pending": None, "remote": "unreachable", "error": "sync failed; see server log"}
+    if isinstance(result, dict) and result.get("error"):
+        logger.warning("Sync run error: %s", result["error"])
+        result = dict(result, error="sync failed; see server log")
     return ra._clean(result)

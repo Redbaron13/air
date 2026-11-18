@@ -15,6 +15,7 @@ for _p in (os.path.dirname(_SCRIPTS_DIR), _SCRIPTS_DIR):
         sys.path.insert(0, _p)
 
 import video_frames as vf  # noqa: E402
+from server import exif_meta  # noqa: E402
 from server import finalize as fin  # noqa: E402
 from server import media_intel as mi  # noqa: E402
 from server import output_schema as osch  # noqa: E402
@@ -27,6 +28,11 @@ logging.basicConfig(
     format="%(asctime)sZ %(levelname)s %(name)s %(message)s",
 )
 logger = logging.getLogger("bam.vision")
+
+_DRONE_TELEMETRY_KEYS = ("make", "lens_model", "iso", "shutter_speed", "aperture", "camera_serial", "gimbal_yaw",
+                         "flight_yaw", "flight_roll", "rel_altitude", "abs_altitude", "capture_utc_offset",
+                         "captured_at_local")
+
 
 def get_exif_data(filepath):
     """Extracts comprehensive EXIF telemetry, angles, orientation, and GPS coordinates."""
@@ -52,6 +58,9 @@ def get_exif_data(filepath):
         "gimbal_pitch": None,
         "captured_at": None
     }
+    for _k in _DRONE_TELEMETRY_KEYS:
+        telemetry[_k] = None
+    telemetry["raw_exif"] = None
     
     if not os.path.exists(filepath):
         logger.warning("Source file is missing; path=%s", filepath)
@@ -92,7 +101,23 @@ def get_exif_data(filepath):
                     break
     except Exception as e:
         logger.warning("Extended EXIF extraction failed; path=%s error=%s", filepath, e)
-        
+
+    try:
+        meta = exif_meta.build_asset_meta(exif_meta.read_exif_dump(filepath))
+        for k in _DRONE_TELEMETRY_KEYS:
+            if meta.get(k) is not None:
+                telemetry[k] = meta[k]
+        for src, dst in (("sensor", "sensor"), ("focal_length", "focal_length"), ("lat", "lat"), ("lon", "lon"),
+                         ("alt", "alt"), ("captured_at", "captured_at")):
+            if meta.get(src) is not None and (telemetry.get(dst) is None or src == "captured_at"):
+                telemetry[dst] = meta[src]
+        if meta.get("gimbal_pitch") is not None:
+            telemetry["gimbal_pitch"] = meta["gimbal_pitch"]
+            telemetry["camera_pitch"] = telemetry.get("camera_pitch") or str(meta["gimbal_pitch"])
+        telemetry["raw_exif"] = meta.get("raw_exif") or None
+    except Exception as e:
+        logger.warning("Drone metadata extraction failed; path=%s error=%s", filepath, e)
+
     return telemetry
 
 def call_ollama(model: str, prompt: str, image_path: str = None):
@@ -140,6 +165,19 @@ def build_telemetry(a):
         "sensor_model": a.get("sensor_model") or a.get("sensor"),
         "focal_length": a.get("focal_length"),
         "gimbal_pitch_deg": a.get("gimbal_pitch"),
+        "gimbal_yaw_deg": a.get("gimbal_yaw"),
+        "flight_yaw_deg": a.get("flight_yaw"),
+        "flight_roll_deg": a.get("flight_roll"),
+        "rel_altitude_m": a.get("rel_altitude"),
+        "camera_make": a.get("camera_make"),
+        "lens_model": a.get("lens_model"),
+        "iso": a.get("iso"),
+        "shutter_speed": a.get("shutter_speed"),
+        "aperture": a.get("aperture"),
+        "camera_serial": a.get("camera_serial"),
+        "utc_offset": a.get("capture_utc_offset"),
+        "captured_at_local": a.get("captured_at_local"),
+        "media_kind": a.get("media_kind"),
         "orientation": a.get("orientation"),
         "duration_s": a.get("duration_s"),
     }
@@ -163,17 +201,33 @@ def run_phase_zero(conn, cur, assets):
                 UPDATE assets SET sensor_model = COALESCE(%s, sensor_model), latitude = COALESCE(%s, latitude),
                     longitude = COALESCE(%s, longitude), altitude_meters = COALESCE(%s, altitude_meters),
                     focal_length = COALESCE(%s, focal_length), gimbal_pitch = COALESCE(%s, gimbal_pitch),
-                    captured_at = COALESCE(%s, captured_at)
+                    captured_at = COALESCE(%s, captured_at), camera_make = COALESCE(%s, camera_make),
+                    lens_model = COALESCE(%s, lens_model), iso = COALESCE(%s, iso),
+                    shutter_speed = COALESCE(%s, shutter_speed), aperture = COALESCE(%s, aperture),
+                    camera_serial = COALESCE(%s, camera_serial), gimbal_yaw = COALESCE(%s, gimbal_yaw),
+                    flight_yaw = COALESCE(%s, flight_yaw), flight_roll = COALESCE(%s, flight_roll),
+                    rel_altitude = COALESCE(%s, rel_altitude), abs_altitude = COALESCE(%s, abs_altitude),
+                    capture_utc_offset = COALESCE(%s, capture_utc_offset),
+                    captured_at_local = COALESCE(%s, captured_at_local),
+                    raw_exif = COALESCE(%s::jsonb, raw_exif)
                 WHERE asset_id = %s
             """, (t["sensor"], t["lat"], t["lon"], t["alt"], t.get("focal_length"), pitch,
-                  t.get("captured_at"), a["asset_id"]))
+                  t.get("captured_at"), t.get("make"), t.get("lens_model"), t.get("iso"), t.get("shutter_speed"),
+                  t.get("aperture"), t.get("camera_serial"), t.get("gimbal_yaw"), t.get("flight_yaw"),
+                  t.get("flight_roll"), t.get("rel_altitude"), t.get("abs_altitude"), t.get("capture_utc_offset"),
+                  t.get("captured_at_local"), json.dumps(t["raw_exif"]) if t.get("raw_exif") else None,
+                  a["asset_id"]))
             merged = {"sensor_model": t["sensor"], "latitude": t["lat"], "longitude": t["lon"],
                       "altitude_meters": t["alt"], "focal_length": t.get("focal_length"), "gimbal_pitch": pitch,
                       "captured_at": t.get("captured_at")}
+            for k in _DRONE_TELEMETRY_KEYS:
+                merged[k] = t.get(k)
             for k, v in merged.items():
                 if v is not None:
                     a[k] = v
             a["orientation"] = t.get("orientation")
+            if t.get("make"):
+                a["camera_make"] = t["make"]
             a["camera_pitch"] = t.get("camera_pitch")
         except Exception:
             logger.exception("Phase 0 failed for asset_id=%s", a.get("asset_id"))

@@ -135,7 +135,7 @@ function renderList() {
     h("div", { class: "flex justify-between" }, h("span", { class: "font-mono truncate" }, a.filename),
       h("span", { class: scoreClass(a.score) }, pct(a.score))),
     h("div", { class: "text-[10px] text-slate-500 flex gap-2" },
-      h("span", {}, a.kind), h("span", {}, a.state), h("span", {}, a.backend), a.gps ? h("span", {}, "\ud83d\udccd") : h("span", { class: "text-amber-500" }, "no GPS"),
+      h("span", {}, a.kind), h("span", {}, a.state), h("span", {}, a.backend), typeof angleBadge === "function" ? angleBadge(a.drone_angle) : null, a.gps ? h("span", {}, "\ud83d\udccd") : h("span", { class: "text-amber-500" }, "no GPS"),
       a.fail ? h("span", { class: "lvl-fail" }, `${a.fail} fail`) : null, a.warn ? h("span", { class: "lvl-warn" }, `${a.warn} warn`) : null))));
 }
 function step(delta) {

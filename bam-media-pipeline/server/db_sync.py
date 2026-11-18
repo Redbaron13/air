@@ -110,6 +110,9 @@ def _apply_changes(rcur, changes):
         rcur.execute(build_upsert_sql(table, cols, pk_cols), (json.dumps(payload),))
 
 
+GENERIC_SYNC_ERROR = "last sync attempt failed; see server log"
+
+
 def sync_status():
     status = {"configured": bool(_remote_dsn()), "pending": 0, "oldest_pending_at": None,
               "last_error": None, "failed": 0}
@@ -128,11 +131,14 @@ def sync_status():
                 cur.execute("SELECT last_error FROM sync_outbox WHERE synced_at IS NULL "
                             "AND last_error IS NOT NULL ORDER BY id DESC LIMIT 1")
                 row = cur.fetchone()
-                status["last_error"] = row[0] if row else None
+                if row:
+                    logger.warning("Sync outbox last_error: %s", row[0])
+                status["last_error"] = GENERIC_SYNC_ERROR if row else None
         finally:
             conn.close()
     except Exception as e:
-        status["last_error"] = f"local db unavailable: {e}"
+        logger.warning("sync_status: local db unavailable: %s", e)
+        status["last_error"] = "local db unavailable"
     return status
 
 

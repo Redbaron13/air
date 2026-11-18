@@ -72,6 +72,187 @@ async function frameStrip(id, video) {
   return h("div", {}, box, viewer);
 }
 
+// ---- Capture / drone / camera / flight cards
+const ANGLE_STYLE = { nadir: "bg-rose-900 text-rose-200", high_oblique: "bg-orange-900 text-orange-200", medium_oblique: "bg-amber-900 text-amber-200", low_oblique: "bg-lime-900 text-lime-200", horizon: "bg-sky-900 text-sky-200" };
+const angleLabel = (v) => String(v).replace(/_/g, " ");
+const angleBadge = (v) => (v ? badge(angleLabel(v), ANGLE_STYLE[v] || "bg-slate-800 text-slate-300") : null);
+const present = (v) => v !== null && v !== undefined && v !== "";
+const num = (v, d = 1, unit = "") => (present(v) && Number.isFinite(Number(v)) ? `${Number(v).toFixed(d)}${unit}` : null);
+const dur = (s) => {
+  if (!present(s) || !Number.isFinite(Number(s))) return null;
+  s = Math.round(Number(s));
+  return s >= 3600 ? `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m ${s % 60}s` : s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
+};
+const card = (title, ...kids) => h("div", { class: "bg-slate-900 border border-slate-800 rounded p-3 min-w-0" }, h("h3", { class: "text-xs uppercase font-bold text-slate-500 mb-2" }, title), ...kids);
+const kvPresent = (rows) => { const r = rows.filter(([, v]) => present(v)); return r.length ? kv(r) : h("div", { class: "text-xs text-slate-600" }, "No data."); };
+const svgEl = (tag, attrs = {}, ...kids) => {
+  const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs)) { if (k.startsWith("on")) el.addEventListener(k.slice(2), v); else el.setAttribute(k, v); }
+  kids.forEach((k) => el.append(k));
+  return el;
+};
+
+function captureCard(cm) {
+  const c = cm.capture || {}, l = cm.location || {}, ad = l.address || cm.address || null;
+  const hasPos = l.gps_valid !== false && present(l.latitude) && present(l.longitude) && Number.isFinite(Number(l.latitude)) && Number.isFinite(Number(l.longitude));
+  const rows = [["Local time", c.local_display || c.captured_at], ["UTC", c.captured_at_utc], ["UTC offset", c.utc_offset]];
+  const parts = [];
+  if (c.tz_known === false) parts.push(h("div", { class: "text-[11px] lvl-warn mb-1" }, "\u26a0 Time zone unknown; local time may be wrong."));
+  parts.push(kvPresent(rows));
+  if (hasPos) {
+    const lat = Number(l.latitude), lon = Number(l.longitude), txt = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+    const copy = h("button", { type: "button", class: `${bNeutral} !px-2 !py-0.5` }, "Copy coordinates");
+    copy.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(txt); copy.textContent = "Copied"; } catch (_) { copy.textContent = "Copy failed"; }
+      setTimeout(() => { copy.textContent = "Copy coordinates"; }, 1500);
+    });
+    parts.push(h("div", { class: "mt-2" }, kvPresent([["Latitude", lat.toFixed(6)], ["Longitude", lon.toFixed(6)], ["Altitude (MSL)", num(l.altitude_m, 1, " m")], ["Relative altitude", num(l.rel_altitude_m, 1, " m")]])));
+    parts.push(h("div", { class: "flex gap-2 items-center mt-2" },
+      h("a", { class: "text-sky-400 underline text-xs", target: "_blank", rel: "noopener", href: `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=17/${lat}/${lon}` }, "Open in OpenStreetMap"), copy));
+  } else parts.push(h("div", { class: "text-xs text-amber-500 mt-2" }, "No valid GPS position."));
+  if (ad) {
+    parts.push(h("div", { class: "mt-2 text-xs text-slate-300" }, h("div", { class: "text-[10px] uppercase font-bold text-slate-500" }, "Address"), ad.display_name || null));
+    parts.push(kvPresent([["Road", ad.road], ["City", ad.city], ["County", ad.county], ["State", ad.state], ["Postcode", ad.postcode], ["Country", ad.country]]));
+  }
+  return card("Capture & location", ...parts);
+}
+
+function droneCard(dr) {
+  if (!dr) return null;
+  const why = arr(dr.basis);
+  return card("Drone shot",
+    h("div", { class: "flex gap-2 items-center flex-wrap mb-2" },
+      dr.drone_angle ? h("span", { class: `inline-block px-3 py-1 rounded text-sm font-bold uppercase ${ANGLE_STYLE[dr.drone_angle] || "bg-slate-800 text-slate-300"}` }, angleLabel(dr.drone_angle)) : h("span", { class: "text-xs text-slate-500" }, "Angle unknown"),
+      dr.facing_compass ? badge(`Facing ${dr.facing_compass}`, "bg-slate-800 text-slate-200") : null),
+    kvPresent([["Shot type", dr.shot_type], ["Viewed from", dr.viewed_from],
+      ["Facing", [dr.facing_relative, dr.facing_side].filter(present).join(" / ") || null], ["Facing reference", dr.facing_reference],
+      ["Altitude band", dr.altitude_band], ["Mapping role", dr.mapping_role],
+      ["Gimbal pitch", num(dr.gimbal_pitch_deg, 1, "\u00b0")], ["Gimbal yaw", num(dr.gimbal_yaw_deg, 1, "\u00b0")],
+      ["Flight yaw", num(dr.flight_yaw_deg, 1, "\u00b0")], ["Flight roll", num(dr.flight_roll_deg, 1, "\u00b0")],
+      ["Relative altitude", num(dr.rel_altitude_m, 1, " m")], ["Absolute altitude", num(dr.abs_altitude_m, 1, " m")]]),
+    why.length ? h("div", { class: "mt-2" }, h("div", { class: "text-[10px] uppercase font-bold text-slate-500" }, "Why"),
+      h("ul", { class: "text-xs text-slate-400 list-disc ml-4" }, why.map((b) => h("li", {}, show(b))))) : null);
+}
+
+function cameraCard(cam) {
+  if (!cam) return null;
+  return card("Camera", kvPresent([["Make", cam.make], ["Model", cam.model], ["Lens", cam.lens_model], ["Focal length", cam.focal_length], ["ISO", cam.iso],
+    ["Shutter speed", cam.shutter_speed], ["Aperture", cam.aperture], ["Serial", cam.serial]]));
+}
+
+function rawExifCard(raw, fo, d) {
+  const entries = Object.entries(raw || {}).sort((x, y) => x[0].localeCompare(y[0]));
+  const body = h("tbody");
+  const filter = h("input", { class: `${inp} w-full mb-1`, "aria-label": "Filter raw EXIF", placeholder: "Filter raw EXIF (key or value)" });
+  const render = () => {
+    const f = filter.value.trim().toLowerCase();
+    clear(body);
+    entries.filter(([k, v]) => !f || k.toLowerCase().includes(f) || String(show(v)).toLowerCase().includes(f)).forEach(([k, v]) =>
+      body.append(h("tr", { class: "border-b border-slate-800/60" }, h("td", { class: "py-0.5 pr-2 text-slate-500 align-top break-all" }, k), h("td", { class: "py-0.5 font-mono break-all" }, show(v) ?? ""))));
+  };
+  filter.addEventListener("input", render);
+  render();
+  return h("details", { class: "bg-slate-900 border border-slate-800 rounded p-3" },
+    h("summary", { class: "cursor-pointer text-xs uppercase font-bold text-slate-500" }, `Raw EXIF vs output (${entries.length} tags)`),
+    h("div", { class: "grid grid-cols-2 gap-3 mt-2" },
+      h("div", { class: "min-w-0" }, h("h4", { class: "text-[10px] uppercase font-bold text-slate-500 mb-1" }, "Raw EXIF"), filter,
+        h("div", { class: "max-h-96 overflow-auto bg-black rounded p-1" }, h("table", { class: "w-full text-[11px]" }, body))),
+      h("div", { class: "min-w-0" }, h("h4", { class: "text-[10px] uppercase font-bold text-slate-500 mb-1" }, "Output JSON"),
+        h("pre", { class: "text-[10px] text-slate-300 max-h-96 overflow-auto bg-black rounded p-2" }, d.final_output ? JSON.stringify(fo, null, 2) : "Not produced yet"))));
+}
+
+function flightCard(fl, id) {
+  if (!fl) return card("Position in flight", h("div", { class: "text-xs text-slate-600" }, "Not part of a detected flight."));
+  const sm = fl.flight || {};
+  const nav = (label, target) => h("button", { type: "button", class: `${bNeutral} ${target ? "" : "opacity-40 cursor-not-allowed"}`, disabled: target ? null : "disabled", onclick: () => target && selectAsset(target) }, label);
+  const map = h("div", { class: "mt-2" }, h("div", { class: "text-xs text-slate-500" }, "Loading flight track..."));
+  const card_ = card("Position in flight",
+    h("div", { class: "text-sm text-slate-200 mb-1" }, `Photo ${fl.seq ?? "?"} of ${fl.total ?? "?"} in flight ${fl.flight_index ?? "?"} of ${fl.flight_count ?? "?"}`),
+    kvPresent([["Elapsed from first shot", dur(fl.elapsed_s)], ["Gap from previous", dur(fl.dt_prev_s)], ["Gap to next", dur(fl.dt_next_s)],
+      ["Distance from previous", num(fl.dist_prev_m, 1, " m")], ["Speed", num(fl.speed_mps, 1, " m/s")],
+      ["Heading", [num(fl.heading_deg, 0, "\u00b0"), fl.heading_compass].filter(present).join(" ") || null],
+      ["Flight duration", dur(sm.duration_s)], ["Flight distance", num(sm.total_distance_m, 0, " m")], ["Flight avg speed", num(sm.avg_speed_mps, 1, " m/s")],
+      ["Flight start", sm.start_at], ["Flight end", sm.end_at]]),
+    h("div", { class: "flex gap-2 mt-2" }, nav("\u2190 Previous shot", fl.prev_asset_id), nav("Next shot \u2192", fl.next_asset_id)), map);
+  api(`${API}/intel/flight/${encodeURIComponent(id)}`).then((r) => { if (selectedId === id) clear(map).append(flightMap(r, id)); })
+    .catch((e) => { clear(map).append(h("div", { class: "text-xs text-amber-500" }, `Flight track unavailable: ${e.message}`)); });
+  return card_;
+}
+
+function flightMap(r, id) {
+  const pts = arr(r && r.points);
+  const geo = pts.filter((p) => present(p.latitude) && present(p.longitude) && Number.isFinite(Number(p.latitude)) && Number.isFinite(Number(p.longitude)) && !(Number(p.latitude) === 0 && Number(p.longitude) === 0));
+  const wrap = h("div", {});
+  if (!geo.length) { wrap.append(h("div", { class: "text-xs text-slate-500" }, "No GPS points to draw a track.")); }
+  else {
+    const W = 360, H = 220, pad = 14;
+    const lats = geo.map((p) => Number(p.latitude)), lons = geo.map((p) => Number(p.longitude));
+    const minLat = Math.min(...lats), maxLat = Math.max(...lats), minLon = Math.min(...lons), maxLon = Math.max(...lons);
+    const midLat = (minLat + maxLat) / 2, kx = Math.cos((midLat * Math.PI) / 180);
+    const spanX = Math.max((maxLon - minLon) * kx, 1e-9), spanY = Math.max(maxLat - minLat, 1e-9);
+    const scale = Math.min((W - 2 * pad) / spanX, (H - 2 * pad) / spanY);
+    const offX = (W - spanX * scale) / 2, offY = (H - spanY * scale) / 2;
+    const px = (p) => (geo.length === 1 ? W / 2 : offX + (Number(p.longitude) - minLon) * kx * scale);
+    const py = (p) => (geo.length === 1 ? H / 2 : H - offY - (Number(p.latitude) - minLat) * scale);
+    const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: "w-full max-w-xl bg-black rounded border border-slate-800", role: "img", "aria-label": "Flight track map" });
+    const byFlight = new Map();
+    geo.forEach((p) => { const k = p.flight_index ?? 0; if (!byFlight.has(k)) byFlight.set(k, []); byFlight.get(k).push(p); });
+    const colors = ["#34d399", "#38bdf8", "#fbbf24", "#a78bfa", "#f472b6", "#fb923c"];
+    let ci = 0;
+    const colorOf = new Map();
+    for (const [k, list] of byFlight) {
+      list.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+      const col = colors[ci++ % colors.length]; colorOf.set(k, col);
+      if (list.length > 1) svg.append(svgEl("polyline", { points: list.map((p) => `${px(p).toFixed(1)},${py(p).toFixed(1)}`).join(" "), fill: "none", stroke: col, "stroke-width": "1.5", opacity: "0.7" }));
+    }
+    geo.forEach((p) => {
+      if (!Number.isFinite(Number(p.heading_deg))) return;
+      const a = (Number(p.heading_deg) * Math.PI) / 180, x = px(p), y = py(p), dx = Math.sin(a), dy = -Math.cos(a);
+      svg.append(svgEl("line", { x1: x.toFixed(1), y1: y.toFixed(1), x2: (x + dx * 9).toFixed(1), y2: (y + dy * 9).toFixed(1), stroke: "#94a3b8", "stroke-width": "1" }));
+    });
+    geo.forEach((p) => {
+      const cur = p.asset_id === id;
+      const dot = svgEl("circle", { cx: px(p).toFixed(1), cy: py(p).toFixed(1), r: cur ? 6 : 3.5, fill: cur ? "#ffffff" : colorOf.get(p.flight_index ?? 0), stroke: cur ? "#34d399" : "none", "stroke-width": "2", style: "cursor:pointer" },
+        svgEl("title", {}, `#${p.seq ?? "?"} ${p.asset_id}`));
+      dot.addEventListener("click", () => selectAsset(p.asset_id));
+      svg.append(dot);
+    });
+    wrap.append(svg);
+  }
+  if (pts.length > 1) wrap.append(seqStrip(pts, id));
+  if (pts.length - geo.length > 0) wrap.append(h("div", { class: "text-[10px] text-slate-500 mt-1" }, `${pts.length - geo.length} shot(s) without GPS not drawn.`));
+  return wrap;
+}
+
+function seqStrip(pts, id) {
+  const sorted = [...pts].sort((a, b) => (a.flight_index ?? 0) - (b.flight_index ?? 0) || (a.seq ?? 0) - (b.seq ?? 0));
+  const cur = sorted.find((p) => p.asset_id === id), fi = cur ? cur.flight_index : sorted[0].flight_index;
+  const list = sorted.filter((p) => p.flight_index === fi);
+  const times = list.map((p) => Number(p.elapsed_s ?? p.t ?? NaN));
+  const useTime = times.every(Number.isFinite) && Math.max(...times) > Math.min(...times);
+  const W = 360, H = 26, pad = 8;
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: "w-full max-w-xl mt-1", role: "img", "aria-label": "Shot sequence timeline" });
+  svg.append(svgEl("line", { x1: pad, y1: H / 2, x2: W - pad, y2: H / 2, stroke: "#334155", "stroke-width": "1" }));
+  list.forEach((p, i) => {
+    const t = useTime ? (times[i] - Math.min(...times)) / (Math.max(...times) - Math.min(...times)) : list.length > 1 ? i / (list.length - 1) : 0.5;
+    const isCur = p.asset_id === id;
+    const dot = svgEl("circle", { cx: (pad + t * (W - 2 * pad)).toFixed(1), cy: H / 2, r: isCur ? 5 : 3, fill: isCur ? "#ffffff" : "#34d399", style: "cursor:pointer" }, svgEl("title", {}, `#${p.seq ?? i + 1}`));
+    dot.addEventListener("click", () => selectAsset(p.asset_id));
+    svg.append(dot);
+  });
+  return h("div", {}, h("div", { class: "text-[10px] uppercase font-bold text-slate-500 mt-2" }, useTime ? "Sequence timeline (spaced by time)" : "Sequence timeline"), svg);
+}
+
+function captureSections(d, id, fo) {
+  const cm = d.capture_meta;
+  if (!cm) return [];
+  const out = [h("div", { class: "grid grid-cols-2 gap-3" }, captureCard(cm), droneCard(cm.drone) || cameraCard(cm.camera))];
+  if (cm.drone) out.push(h("div", { class: "grid grid-cols-2 gap-3" }, cameraCard(cm.camera), flightCard(cm.flight, id)));
+  else out.push(flightCard(cm.flight, id));
+  out.push(rawExifCard(cm.raw_exif, fo, d));
+  return out;
+}
+
 // ---- Review detail (replaces review.js selectAsset)
 selectAsset = async function (id) {
   selectedId = id;
@@ -113,7 +294,7 @@ selectAsset = async function (id) {
       h("div", { class: "min-w-0" },
         h("div", { class: "font-mono text-emerald-400 font-bold break-all" }, d.identifier || a.asset_id, d.identifier_locked ? h("span", { class: "ml-2 text-amber-400", title: "Identifier is locked; edits never change it" }, "\ud83d\udd12 locked") : null),
         h("div", { class: "text-xs text-slate-500" }, `${a.original_filename} \u00b7 ${a.media_kind} \u00b7 ${a.workflow_state} \u00b7 AI source: ${d.backend}`),
-        h("div", { class: "flex gap-1 flex-wrap mt-1" }, indicatorBadges(ind), trainBadge, fo.human && fo.human.edited ? badge("Edited", "bg-blue-900 text-blue-300") : null)),
+        h("div", { class: "flex gap-1 flex-wrap mt-1" }, indicatorBadges(ind), trainBadge, angleBadge(d.capture_meta && d.capture_meta.drone && d.capture_meta.drone.drone_angle), fo.human && fo.human.edited ? badge("Edited", "bg-blue-900 text-blue-300") : null)),
       h("div", { class: "text-center shrink-0" }, h("div", { class: "text-[10px] uppercase text-slate-500" }, "AI agreement"), h("div", { class: `text-xl font-bold ${scoreClass(a.agreement_score)}` }, pct(a.agreement_score)))),
     h("label", { class: "block text-[10px] text-slate-500" }, "Notes (saved with the file)", notes),
     h("label", { class: "block text-[10px] text-slate-500" }, "Feedback (for model training)", feedback),
@@ -203,6 +384,7 @@ selectAsset = async function (id) {
     if (!x.available) { exifBox.append(h("div", { class: "text-amber-500" }, `Unavailable${x.error ? `: ${x.error}` : " (file not found)"}`)); return; }
     exifBox.append(h("pre", { class: "text-[10px] max-h-64 overflow-auto text-slate-300" }, Object.entries(x.live).map(([k, v]) => `${k}: ${v}`).join("\n")));
   }).catch((e) => { clear(exifBox).append(e.message); });
+  box.append(...captureSections(d, id, fo));
   if (isVideo) {
     const strip = h("div", {}, "Loading frames...");
     box.append(section("Frames used for analysis", strip));
@@ -276,9 +458,11 @@ function exploreSearchPanel() {
     if (shoot.value) p.set("shoot", shoot.value);
     if (shot.value.trim()) p.set("shot_type", shot.value.trim());
     if (genre.value.trim()) p.set("genre", genre.value.trim());
+    if (angle.value) p.set("drone_angle", angle.value);
     setStatus(status, "Searching...");
     try {
       const r = await api(`${API}/intel/search?${p}`);
+      if (angle.value) r.results = r.results.filter((x) => x.drone_angle === angle.value);
       setStatus(status, `${r.total} result(s)${r.total > r.results.length ? `, showing ${r.results.length}` : ""}.`);
       clear(list);
       r.results.forEach((x) => list.append(h("div", { class: "flex gap-2 items-start bg-slate-800/50 rounded p-1" },
@@ -286,12 +470,12 @@ function exploreSearchPanel() {
         h("div", { class: "min-w-0 text-xs" },
           h("button", { type: "button", class: "underline text-sky-400 font-mono text-left break-all", onclick: () => gotoAsset(x.asset_id) }, x.identifier || x.filename),
           h("div", { class: "text-[10px] text-slate-500" }, [x.kind, x.state, x.shot_type, x.genre, x.shoot_id].filter(Boolean).join(" \u00b7 ")),
-          h("div", { class: "flex gap-1 flex-wrap" }, indicatorBadges(x.indicators)),
+          h("div", { class: "flex gap-1 flex-wrap" }, angleBadge(x.drone_angle), indicatorBadges(x.indicators)),
           h("div", { class: "text-slate-300" }, x.snippet || x.description || "")))));
     } catch (e) { setStatus(status, e.message, false); }
   };
   const go = h("button", { type: "submit", class: bPrimary }, "Search");
-  const form = h("form", { class: "flex gap-2 flex-wrap items-center", onsubmit: (e) => { e.preventDefault(); run(); } }, q, kind, shoot, shot, genre, go);
+  const form = h("form", { class: "flex gap-2 flex-wrap items-center", onsubmit: (e) => { e.preventDefault(); run(); } }, q, kind, shoot, shot, genre, angle, go);
   return section("Search", h("p", { class: "text-[10px] text-slate-500 mb-2" }, "Searches the stored output only; nothing is re-run through the models."), form, status, list);
 }
 function scopePanel() {

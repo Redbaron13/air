@@ -22,10 +22,13 @@ logger = logging.getLogger("bam.finalize")
 ELIGIBLE_STATES = ("PENDING_HUMAN", "INGESTED")
 _ASSET_COLS = ("asset_id, unique_stem, media_kind, shoot_id, captured_at, latitude, longitude, sensor_model, "
                "focal_length, gimbal_pitch, describes, alt, service_tags, workflow_state, identifier, "
-               "identifier_components, identifier_locked, final_output, scene_group, source_path, original_sha256")
+               "identifier_components, identifier_locked, final_output, scene_group, source_path, original_sha256, "
+               "rel_altitude, gimbal_yaw, flight_yaw, flight_roll, abs_altitude, capture_utc_offset, address, "
+               "flight_index, flight_seq, flight_total")
 _UPDATABLE = {"shoot_id", "scene_group", "identifier", "identifier_components", "identifier_locked", "final_output",
-              "describes", "alt", "service_tags", "indicators"}
-_JSON_COLS = {"identifier_components", "final_output", "service_tags", "indicators"}
+              "describes", "alt", "service_tags", "indicators", "address", "flight_index", "flight_seq",
+              "flight_total"}
+_JSON_COLS = {"identifier_components", "final_output", "service_tags", "indicators", "address"}
 TRAINING_SOURCES = ("edit", "flag", "feedback", "rework")
 
 
@@ -67,7 +70,7 @@ class _DB:
 
     def list_shoots(self):
         rows = self._all(
-            "SELECT s.shoot_id, s.project_name, s.centroid_lat, s.centroid_lon, s.radius_meters, s.locked, "
+            "SELECT s.shoot_id, s.project_name, s.centroid_lat, s.centroid_lon, s.radius_meters, s.locked, s.address, "
             "LEAST(s.first_captured_at, m.mn) AS first_captured_at, GREATEST(s.last_captured_at, m.mx) AS last_captured_at "
             "FROM shoots s LEFT JOIN (SELECT shoot_id, MIN(captured_at) AS mn, MAX(captured_at) AS mx FROM assets "
             "GROUP BY shoot_id) m ON m.shoot_id = s.shoot_id ORDER BY s.shoot_id")
@@ -84,6 +87,9 @@ class _DB:
             (shoot["shoot_id"], shoot.get("project_name") or f"Shoot {shoot['shoot_id']}",
              lat if lat is not None else 0.0, lon if lon is not None else 0.0, shoot.get("radius_meters") or 300.0,
              shoot.get("first_captured_at"), shoot.get("last_captured_at") or shoot.get("first_captured_at")))
+
+    def set_shoot_address(self, shoot_id, address):
+        self._exec("UPDATE shoots SET address = %s WHERE shoot_id = %s", (Json(address, dumps=_dumps), shoot_id))
 
     def update_shoot_geo(self, shoot_id, lat, lon, radius):
         self._exec("UPDATE shoots SET centroid_lat = %s, centroid_lon = %s, radius_meters = %s WHERE shoot_id = %s",
@@ -191,6 +197,82 @@ def _refresh_related(db, shoot_ids, settings):
                 db.update_asset(a["asset_id"], final_output=fo)
 
 
+def _resolve_address(lat, lon, settings):
+    """Reverse-geocode (cached) when enabled, else cache-only. Never raises."""
+    try:
+        from server import geocode
+        if settings.get("geocode_enabled"):
+            return geocode.reverse_geocode(lat, lon, enabled=True)
+        return geocode.cached_address(lat, lon)
+    except Exception:
+        logger.warning("address lookup failed", exc_info=True)
+        return None
+
+
+_CLS_KEYS = ("camera_perspective", "drone_angle", "facing_compass", "facing_relative", "facing_side",
+             "facing_reference", "viewed_from", "altitude_band", "mapping_role")
+
+
+def _refresh_flight(db, shoot_id, settings, shoot=None):
+    """Flight position, drone taxonomy (with travel heading) and address for every asset of a shoot."""
+    from server import output_schema as osch
+    members = db.assets_in_shoot(shoot_id)
+    if not members:
+        return
+    track = mi.build_flight_tracks(members, settings)
+    addresses = {}
+
+    def addr(lat, lon):
+        key = (round(float(lat), 4), round(float(lon), 4))
+        if key not in addresses:
+            addresses[key] = _resolve_address(lat, lon, settings)
+        return addresses[key]
+
+    if shoot and shoot.get("centroid_lat") and shoot.get("centroid_lon") and not shoot.get("address"):
+        sa = addr(shoot["centroid_lat"], shoot["centroid_lon"])
+        if sa:
+            db.set_shoot_address(shoot_id, sa)
+    for a in members:
+        fields = {}
+        loc = mi.locate_in_flight(track, a["asset_id"])
+        if loc:
+            for col, val in (("flight_index", loc["flight_index"]), ("flight_seq", loc["seq"]),
+                             ("flight_total", loc["total"])):
+                if a.get(col) != val:
+                    fields[col] = val
+        address = a.get("address") if isinstance(a.get("address"), dict) else None
+        if address is None and has_gps(a):
+            address = addr(a["latitude"], a["longitude"])
+            if address:
+                fields["address"] = address
+        fo = _final(a)
+        if fo:
+            fo = copy.deepcopy(fo)
+            ctx = mi.flight_context(track, a["asset_id"]) if loc else {}
+            flight = (track["flights"][loc["flight_index"] - 1] if loc else {})
+            center = ({"lat": float(shoot["centroid_lat"]), "lon": float(shoot["centroid_lon"])}
+                      if shoot and shoot.get("centroid_lat") and shoot.get("centroid_lon")
+                      and flight.get("count", int()) >= 8 and not flight.get("is_linear") else None)
+            if center:
+                ctx["subject_center"] = center
+            exif = osch.exif_classification(mi.telemetry_from_asset(a), settings, ctx)
+            cls = fo.setdefault("classification", {})
+            for k in _CLS_KEYS:
+                cls[k] = exif.get(k)
+            cls["shot_type_from_exif"] = exif.get("shot_type")
+            cls["exif_basis"] = exif.get("basis") or []
+            st = exif.get("shot_type")
+            cls["shot_type_matches_exif"] = (cls.get("shot_type") == st) if st and st != "unknown" else None
+            fo["flight"] = ({k: loc[k] for k in ("flight_index", "seq", "total", "elapsed_s", "dt_prev_s",
+                                                   "dist_prev_m", "speed_mps", "heading_deg")} if loc
+                            else {k: None for k in osch.OPTIONAL_KEYS["flight"]})
+            fo["address"] = osch._norm_address(address)
+            if fo != a.get("final_output"):
+                fields["final_output"] = fo
+        if fields:
+            db.update_asset(a["asset_id"], **fields)
+
+
 def _check_unique(db, identifier, asset_id):
     owner = db.identifier_owner(identifier)
     if owner is not None and owner != asset_id:
@@ -257,6 +339,12 @@ def finalize_assets(conn, asset_ids, settings=None):
         touched.append(sid)
         logger.info("Asset finalized; asset_id=%s identifier=%s", a["asset_id"], identifier)
 
+    by_shoot = {s["shoot_id"]: s for s in db.list_shoots()}
+    for sid in dict.fromkeys(touched):
+        try:
+            _refresh_flight(db, sid, settings, by_shoot.get(sid))
+        except Exception:
+            logger.warning("flight/address refresh failed for shoot %s", sid, exc_info=True)
     _refresh_related(db, touched, settings)
     return {"finalized": finalized, "skipped": skipped, "shoots_created": created}
 

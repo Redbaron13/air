@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
 KINDS = ("still", "video", "video_frame", "model3d")
 STAGES = ("screener", "verifier", "judge", "frame", "video_base", "video_detail", "video_synthesis")
 SCHEMA_DIR = Path(__file__).resolve().parent / "schemas"
@@ -13,6 +13,12 @@ ENUMS = {
     "shot_type": ("aerial_nadir", "aerial_oblique", "aerial_low_oblique", "ground_level", "interior",
                   "detail_closeup", "panorama"),
     "scene_type": ("indoor", "outdoor"),
+    # derived from EXIF/flight data by the pipeline, never asked of the model
+    "drone_angle": ("nadir", "high_oblique", "medium_oblique", "low_oblique", "horizon"),
+    "altitude_band": ("low", "medium", "high"),
+    "facing_relative": ("front", "rear", "side"),
+    "mapping_role": ("nadir_grid", "oblique_ring", "orbit_poi", "corridor", "panorama",
+                     "video_nadir", "video_oblique", "video_horizon", "ground"),
     "subject_coverage": ("full", "partial", "none"),
     "motion_blur": ("none", "slight", "heavy"),
     "texture_quality": ("good", "fair", "poor"),
@@ -20,6 +26,23 @@ ENUMS = {
     "exposure": ("good", "over", "under"),
 }
 ENUM_FALLBACK = {"media_genre": "other"}
+SHOT_TYPE_ALIASES = {
+    "aerial": "aerial_oblique", "oblique": "aerial_oblique", "high_oblique": "aerial_oblique",
+    "medium_oblique": "aerial_oblique", "aerial_high_oblique": "aerial_oblique",
+    "aerial_medium_oblique": "aerial_oblique", "nadir": "aerial_nadir", "top_down": "aerial_nadir",
+    "aerial_top_down": "aerial_nadir", "low_oblique": "aerial_low_oblique", "horizon": "aerial_low_oblique",
+    "aerial_horizon": "aerial_low_oblique", "ground": "ground_level",
+}
+# Present in every assembled record (additive in 1.1.0); not required of older stored records.
+OPTIONAL_KEYS = {
+    "capture": ["captured_at_local", "utc_offset", "gimbal_yaw_deg", "flight_yaw_deg", "flight_roll_deg",
+                "rel_altitude_m", "camera_make", "lens_model", "iso", "shutter_speed", "aperture", "camera_serial"],
+    "classification": ["drone_angle", "facing_compass", "facing_relative", "facing_side", "facing_reference",
+                       "viewed_from", "altitude_band", "mapping_role"],
+    "address": ["display_name", "road", "city", "county", "state", "postcode", "country"],
+    "flight": ["flight_index", "seq", "total", "elapsed_s", "dt_prev_s", "dist_prev_m", "speed_mps", "heading_deg"],
+}
+ADDRESS_FIELDS = tuple(OPTIONAL_KEYS["address"])
 LIST_FIELDS = ("primary_subjects", "objects", "structures", "materials", "dominant_colors", "visual_mood", "tags")
 
 STANDARD_KEYS = {
@@ -103,6 +126,8 @@ def _clamp(v):
 
 def _enum(name, v):
     s = _str(v).lower().replace(" ", "_").replace("-", "_")
+    if name == "shot_type" and s not in ENUMS[name]:
+        s = SHOT_TYPE_ALIASES.get(s, s)
     return s if s in ENUMS[name] else ENUM_FALLBACK.get(name, "unknown")
 
 
@@ -189,6 +214,11 @@ def normalize_model_output(kind, raw):
 
 
 # ---------- prompts ----------
+_SHOT_HELP = (
+    "  (drone footage: aerial_nadir = camera pointing straight down; aerial_oblique = angled down, ground and "
+    "horizon both implied; aerial_low_oblique = near the horizon or from low altitude; ground_level = taken from "
+    "the ground. Use the gimbal pitch in the reference data when present: -90 is straight down.)\n"
+)
 _RULES = (
     "Rules:\n"
     "- Return ONLY one JSON object. No prose, no markdown fences, no comments.\n"
@@ -197,6 +227,7 @@ _RULES = (
     "- Enumerated fields must use one of the allowed values below; never invent new values.\n"
     "- classification.media_genre: " + " | ".join(ENUMS["media_genre"]) + "\n"
     "- classification.shot_type: " + " | ".join(ENUMS["shot_type"]) + "\n"
+    + _SHOT_HELP +
     "- classification.scene_type: indoor | outdoor\n"
     "- photogrammetry.subject_coverage: full | partial | none; motion_blur: none | slight | heavy; "
     "texture_quality: good | fair | poor; suitable_for_model: true | false\n"
@@ -213,6 +244,7 @@ _SCREENER_RULES = (
     "- The example shows STYLE only. Do NOT copy its values; describe the actual image.\n"
     "- classification.media_genre: " + " | ".join(ENUMS["media_genre"]) + "\n"
     "- classification.shot_type: " + " | ".join(ENUMS["shot_type"]) + "\n"
+    + _SHOT_HELP +
     "- classification.scene_type: indoor | outdoor\n"
     "- content.primary_subjects: up to 3 short lowercase strings.\n"
     "- view.label: short description of the view; view.facing: compass word or 'unknown'.\n"
@@ -313,6 +345,43 @@ def _fallback_shot(t):
     return {"shot_type": st, "camera_perspective": cp, "basis": [f"gimbal_pitch_deg={pitch}"]}
 
 
+def _canon_telemetry(t):
+    """Telemetry with the canonical keys classify_shot_from_exif reads, filled from common aliases."""
+    c = _capture(t)
+    out = dict(t)
+    for dst, val in (("gimbal_pitch_deg", c["gimbal_pitch_deg"]), ("altitude_m", c["altitude_m"]),
+                     ("gimbal_yaw_deg", c["gimbal_yaw_deg"] if c["gimbal_yaw_deg"] is not None else c["heading_deg"]),
+                     ("flight_yaw_deg", c["flight_yaw_deg"]), ("rel_altitude_m", c["rel_altitude_m"]),
+                     ("latitude", c["latitude"]), ("longitude", c["longitude"])):
+        if val is not None and out.get(dst) is None:
+            out[dst] = val
+    return out
+
+
+def exif_classification(telemetry, settings=None, context=None):
+    """EXIF-derived classification block fields (legacy + drone taxonomy). Never raises."""
+    t = _canon_telemetry(_d(telemetry))
+    try:
+        from server.media_intel import classify_shot_from_exif
+    except Exception:
+        try:
+            from media_intel import classify_shot_from_exif
+        except Exception:
+            classify_shot_from_exif = None
+    r = None
+    if classify_shot_from_exif:
+        try:
+            r = classify_shot_from_exif(t, settings, context)
+        except Exception:
+            r = None
+    if not isinstance(r, dict):
+        r = _fallback_shot(t)
+    r = dict(r)
+    for k in OPTIONAL_KEYS["classification"]:
+        r.setdefault(k, None)
+    return r
+
+
 def _exif_shot(telemetry):
     try:
         from server.media_intel import classify_shot_from_exif
@@ -331,6 +400,11 @@ def _exif_shot(telemetry):
     return _fallback_shot(telemetry)
 
 
+def _norm_address(a):
+    a = _d(a)
+    return {k: (_str(a.get(k)) or None) for k in ADDRESS_FIELDS}
+
+
 def _capture(t):
     lat = _float(_first(t, "latitude", "lat", "gps_latitude"))
     lon = _float(_first(t, "longitude", "lon", "lng", "gps_longitude"))
@@ -346,6 +420,18 @@ def _capture(t):
         "gimbal_pitch_deg": _float(_first(t, "gimbal_pitch_deg", "gimbal_pitch", "pitch")),
         "orientation": _first(t, "orientation"),
         "heading_deg": _float(_first(t, "heading_deg", "gimbal_yaw", "yaw", "heading")),
+        "captured_at_local": _first(t, "captured_at_local"),
+        "utc_offset": _first(t, "utc_offset", "capture_utc_offset"),
+        "gimbal_yaw_deg": _float(_first(t, "gimbal_yaw_deg", "gimbal_yaw")),
+        "flight_yaw_deg": _float(_first(t, "flight_yaw_deg", "flight_yaw")),
+        "flight_roll_deg": _float(_first(t, "flight_roll_deg", "flight_roll")),
+        "rel_altitude_m": _float(_first(t, "rel_altitude_m", "rel_altitude")),
+        "camera_make": _first(t, "camera_make", "make"),
+        "lens_model": _first(t, "lens_model"),
+        "iso": _first(t, "iso"),
+        "shutter_speed": _first(t, "shutter_speed"),
+        "aperture": _float(_first(t, "aperture")),
+        "camera_serial": _first(t, "camera_serial"),
     }
 
 
@@ -389,9 +475,11 @@ def assemble_record(kind, asset, telemetry, screener, verifier, judge, *, extra=
         merged = _merge(merged, _drop_bad_enums(corrected))
     model = normalize_model_output(kind, merged)
     common = _norm_common(merged)
-    exif = _exif_shot(telemetry)
+    exif = exif_classification(telemetry, extra.get("settings") if isinstance(extra.get("settings"), dict) else None,
+                               _d(extra.get("flight_context")))
     exif_shot = _str(exif.get("shot_type")) or None
     cls = dict(common["classification"])
+    cls.update({k: exif.get(k) for k in OPTIONAL_KEYS["classification"]})
     cls.update({
         "camera_perspective": _str(exif.get("camera_perspective")) or None,
         "shot_type_from_exif": exif_shot,
@@ -408,6 +496,8 @@ def assemble_record(kind, asset, telemetry, screener, verifier, judge, *, extra=
         "view": common["view"], "quality": common["quality"],
         "indicators": {"model_candidate": None, "progression": None, "view_group": None},
         "shoot": {"shoot_id": None, "related_shoots": []},
+        "address": _norm_address(extra.get("address") if "address" in extra else telemetry.get("address")),
+        "flight": _d(extra.get("flight")) or {k: None for k in OPTIONAL_KEYS["flight"]},
         "human": {"notes": "", "feedback": [], "training_candidate": False, "edited": False},
         "review": {"agreement_score": _clamp(score) if score is not None else None,
                    "backend": _str(extra.get("backend")), "reasoning": _str(judge.get("reasoning"))},
