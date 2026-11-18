@@ -294,5 +294,7 @@ def pipeline_backend():
 
 from server.review_api import router as review_router  # noqa: E402
 app.include_router(review_router)
+from server.intel_api import router as intel_router  # noqa
+app.include_router(intel_router)
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

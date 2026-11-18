@@ -1,11 +1,12 @@
 """Read-mostly API behind the local review console (/review.html)."""
 import asyncio
+import copy
 import json
 import logging
 import mimetypes
 import os
 import subprocess
-from datetime import datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID
@@ -16,6 +17,8 @@ from psycopg2.extras import Json, RealDictCursor
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+
+from server import media_intel, output_schema
 
 from server.review_logic import (
     backend_of, build_groups, derive_group_key, explicit_group_id, nearby_assets,
@@ -31,6 +34,9 @@ EXPORTS_DIR = Path(os.getenv("EXPORTS_DIR", "/storage/exports")).resolve()
 BROWSER_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif"}
 BROWSER_VIDEO_EXT = {".mp4", ".m4v", ".mov"}
 SETTINGS_FILE = EXPORTS_DIR / "review_settings.json"
+NOT_FOUND = 4 * ((5 + 5) ** 2 + 1)
+TEXT_MAX = 4 * (5 + 5) ** 3
+TAGS_MAX = 3 * (5 + 5)
 HISTORY_KEY = "pipeline_events_history"
 
 # Latest evaluation per asset joined onto the asset row.
@@ -46,25 +52,13 @@ ASSET_SQL = """
 """
 
 
-class ReviewSettings(BaseModel):
-    """User-tunable thresholds for grouping and validation (editable from the console)."""
-    group_radius_m: float = Field(float(os.getenv("REVIEW_GROUP_RADIUS_M", "150")), gt=0, le=1000000)
-    shoot_radius_m: float | None = Field(default=None, gt=0, le=1000000)
-    stuck_minutes: int = Field(int(os.getenv("REVIEW_STUCK_MINUTES", "60")), ge=1, le=10000)
-    low_agreement: float = Field(0.5, ge=0, le=1)
-    min_alt_length: int = Field(10, ge=0, le=1000)
+def get_settings() -> dict:
+    return media_intel.load_settings(SETTINGS_FILE)
 
 
-def get_settings() -> ReviewSettings:
-    try:
-        return ReviewSettings(**json.loads(SETTINGS_FILE.read_text()))
-    except Exception:
-        return ReviewSettings()
-
-
-def _validate_kwargs(cfg: ReviewSettings) -> dict:
-    return {"stuck_minutes": cfg.stuck_minutes, "shoot_radius_m": cfg.shoot_radius_m,
-            "low_agreement": cfg.low_agreement, "min_alt_length": cfg.min_alt_length}
+def _validate_kwargs(cfg: dict) -> dict:
+    return {"stuck_minutes": cfg["stuck_minutes"], "shoot_radius_m": cfg["shoot_radius_m"],
+            "low_agreement": cfg["low_agreement"], "min_alt_length": cfg["min_alt_length"]}
 
 
 def _conn():
@@ -75,11 +69,11 @@ def _conn():
 
 
 def _clean(value):
-    if isinstance(value, datetime):
+    if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, dict):
         return {k: _clean(v) for k, v in value.items()}
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple, set)):
         return [_clean(v) for v in value]
     if isinstance(value, UUID):
         return str(value)
@@ -217,23 +211,28 @@ async def health():
 
 @router.get("/settings")
 def read_settings():
-    return {"settings": get_settings().model_dump(), "defaults": ReviewSettings.model_construct().model_dump()}
+    return {"settings": get_settings(), "defaults": dict(media_intel.DEFAULT_SETTINGS),
+            "specs": media_intel.SETTING_SPECS}
 
 
 @router.put("/settings")
-def update_settings(cfg: ReviewSettings):
+def update_settings(body: dict):
+    try:
+        cfg = media_intel.validate_settings(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
         SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SETTINGS_FILE.write_text(json.dumps(cfg.model_dump()))
+        SETTINGS_FILE.write_text(json.dumps(cfg))
     except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not save settings: {exc}") from exc
-    return {"settings": cfg.model_dump()}
+        raise HTTPException(status_code=5 * (5 + 5) ** 2, detail=f"Could not save settings: {exc}") from exc
+    return {"settings": get_settings()}
 
 
 @router.delete("/settings")
 def reset_settings():
     SETTINGS_FILE.unlink(missing_ok=True)
-    return {"settings": get_settings().model_dump()}
+    return {"settings": get_settings()}
 
 
 @router.get("/events")
@@ -271,6 +270,22 @@ def list_assets(state: str | None = None, kind: str | None = None, shoot: str | 
     return {"assets": out}
 
 
+def _asset_intel(a, assets, cfg):
+    """Model-candidate sets and progression locations containing this asset, from stored data only."""
+    out = {"model_candidates": [], "progression": []}
+    if not has_gps(a):
+        return out
+    try:
+        sets = media_intel.find_model_candidates(assets, cfg, seed_asset_id=a["asset_id"])
+        out["model_candidates"] = [s for s in sets if a["asset_id"] in s.get("asset_ids", [])][:5]
+        locs = media_intel.find_progression(assets, cfg, seed_asset_id=a["asset_id"])
+        out["progression"] = [loc for loc in locs
+                              if any(a["asset_id"] in v.get("asset_ids", []) for v in loc.get("visits", []))][:5]
+    except Exception as exc:
+        logger.warning("Asset intel failed for %s: %s", a.get("asset_id"), exc)
+    return out
+
+
 @router.get("/assets/{asset_id}")
 def asset_detail(asset_id: str):
     assets = _fetch(ASSET_SQL)
@@ -284,7 +299,7 @@ def asset_detail(asset_id: str):
     cfg = get_settings()
     findings = validate_asset(a, shoots.get(a["shoot_id"]), copies=len(copies),
                               file_exists=_allowed_file(a["source_path"]) is not None, **_validate_kwargs(cfg))
-    groups = build_groups(assets, cfg.group_radius_m)
+    groups = build_groups(assets, cfg["group_radius_m"])
     same_shoot = [x for x in assets if a["shoot_id"] and x["shoot_id"] == a["shoot_id"] and x["asset_id"] != asset_id]
     model_group = next((m for m in groups["models"] if asset_id in m["asset_ids"]), None)
     by_id = {x["asset_id"]: x for x in assets}
@@ -292,15 +307,29 @@ def asset_detail(asset_id: str):
     if model_group:
         parts = [{"asset_id": i, "filename": by_id[i]["original_filename"], "state": by_id[i]["workflow_state"]}
                  for i in model_group["asset_ids"]]
+    intel = _asset_intel(a, assets, cfg)
+    frame_count = _fetch("SELECT COUNT(*) AS n FROM video_frames WHERE asset_id = %s", (asset_id,))
     return _clean({
         "asset": a,
+        "final_output": a.get("final_output"),
+        "identifier": a.get("identifier"),
+        "identifier_components": a.get("identifier_components"),
+        "identifier_locked": bool(a.get("identifier_locked")),
+        "indicators": a.get("indicators") or {},
+        "notes": a.get("notes"),
+        "feedback": a.get("feedback"),
+        "training_candidate": bool(a.get("training_candidate")),
+        "scene_group": a.get("scene_group"),
+        "frame_count": int(frame_count[int()]["n"]) if frame_count else int(),
+        "model_candidates": intel["model_candidates"],
+        "progression": intel["progression"],
         "backend": backend_of(a),
         "evaluations": evals,
         "copies": copies,
         "human_corrections": corrections,
         "shoot": shoots.get(a["shoot_id"]),
         "same_shoot": [{"asset_id": x["asset_id"], "filename": x["original_filename"]} for x in same_shoot[:60]],
-        "nearby": nearby_assets(a, assets, cfg.group_radius_m)[:60],
+        "nearby": nearby_assets(a, assets, cfg["group_radius_m"])[:60],
         "model_group": {"key": model_group["key"], "parts": parts} if model_group else None,
         "findings": findings,
         "stages": stage_progress(a, len(copies)),
@@ -319,6 +348,54 @@ def asset_media(asset_id: str):
     if path.suffix.lower() not in BROWSER_IMAGE_EXT | BROWSER_VIDEO_EXT:
         raise HTTPException(status_code=415, detail="Format cannot be previewed in a browser")
     return FileResponse(path, media_type=mimetypes.guess_type(path.name)[0])
+
+
+def _frame_file(path_str):
+    """Resolve a stored frame path, serving it only from inside EXPORTS_DIR/frames."""
+    if not path_str:
+        return None
+    try:
+        p = Path(path_str)
+        if not p.is_absolute():
+            p = EXPORTS_DIR / p
+        p = p.resolve(strict=True)
+    except (OSError, ValueError, TypeError):
+        return None
+    root = (EXPORTS_DIR / "frames").resolve()
+    return p if p.is_file() and p.is_relative_to(root) else None
+
+
+@router.get("/assets/{asset_id}/frames")
+def asset_frames(asset_id: str):
+    rows = _fetch("SELECT frame_id, frame_index, time_s, pass_name, output FROM video_frames "
+                  "WHERE asset_id = %s ORDER BY frame_index", (asset_id,))
+    base = f"/api/review/assets/{asset_id}/frames"
+    return _clean({"frames": [
+        {"frame_id": r["frame_id"], "frame_index": r["frame_index"], "time_s": r["time_s"],
+         "pass": r["pass_name"], "thumb_url": f"{base}/{r['frame_index']}/thumb",
+         "image_url": f"{base}/{r['frame_index']}/image", "output": r["output"]} for r in rows]})
+
+
+def _serve_frame(asset_id, frame_index, column):
+    rows = _fetch(f"SELECT file_path, thumb_path FROM video_frames WHERE asset_id = %s AND frame_index = %s",
+                  (asset_id, frame_index))
+    if not rows:
+        raise HTTPException(status_code=NOT_FOUND, detail="Frame not found")
+    r = rows[int()]
+    path = _frame_file(r.get(column) or (r.get("file_path") if column == "thumb_path" else None))
+    if not path:
+        raise HTTPException(status_code=NOT_FOUND, detail="Frame file is not available")
+    return FileResponse(path, media_type=mimetypes.guess_type(path.name)[int()])
+
+
+@router.get("/assets/{asset_id}/frames/{frame_index}/thumb")
+def frame_thumb(asset_id: str, frame_index: int):
+    return _serve_frame(asset_id, frame_index, "thumb_path")
+
+
+@router.get("/assets/{asset_id}/frames/{frame_index}/image")
+def frame_image(asset_id: str, frame_index: int):
+    return _serve_frame(asset_id, frame_index, "file_path")
 
 
 @router.get("/assets/{asset_id}/exif")
@@ -346,12 +423,12 @@ def groups():
     assets = _fetch(ASSET_SQL)
     findings = _findings(assets)
     cfg = get_settings()
-    g = build_groups(assets, cfg.group_radius_m)
+    g = build_groups(assets, cfg["group_radius_m"])
     by_id = {a["asset_id"]: _brief(a, findings) for a in assets}
     shoots = _shoots()
     for s in g["shoots"]:
         s["info"] = _clean(shoots.get(s["key"]))
-    return {"radius_m": cfg.group_radius_m, "groups": g, "assets": by_id}
+    return {"radius_m": cfg["group_radius_m"], "groups": g, "assets": by_id}
 
 
 @router.get("/validation")
@@ -370,39 +447,126 @@ def validation():
 
 class Decision(BaseModel):
     action: str = Field(pattern="^(approve|reject|rework)$")
-    notes: str = Field(default="", max_length=4000)
-    describes: str | None = Field(default=None, max_length=4000)
-    alt: str | None = Field(default=None, max_length=1000)
-    service_tags: list[str] | None = Field(default=None, max_length=30)
+    notes: str = Field(default="", max_length=TEXT_MAX)
+    describes: str | None = Field(default=None, max_length=TEXT_MAX)
+    alt: str | None = Field(default=None, max_length=TEXT_MAX // 4)
+    service_tags: list[str] | None = Field(default=None, max_length=TAGS_MAX)
+    final_output: dict | None = None
+    feedback: str = Field(default="", max_length=TEXT_MAX)
+    training_candidate: bool = False
+    reprocess_feedback: str = Field(default="", max_length=TEXT_MAX)
+
+
+_RECORD_BLOCKS = ("classification", "content", "photogrammetry", "view", "quality")
+
+
+def _normalize_record(record: dict) -> dict:
+    """Coerce the free-form blocks of a human-edited record back into schema shape."""
+    norm = output_schema.normalize_model_output("still", record)
+    out = copy.deepcopy(record)
+    for key in _RECORD_BLOCKS:
+        if isinstance(record.get(key), dict) and isinstance(norm.get(key), dict):
+            out[key] = {**record[key], **norm[key]}
+    if "confidence" in record:
+        out["confidence"] = norm["confidence"]
+    return out
+
+
+def _strip_human(rec):
+    return {k: v for k, v in (rec or {}).items() if k != "human"}
+
+
+def _apply_text_edits(rec: dict, d: Decision) -> dict:
+    content = dict(rec.get("content") or {})
+    if d.describes is not None:
+        content["description"] = d.describes
+    if d.alt is not None:
+        content["alt_text"] = d.alt
+    if d.service_tags is not None:
+        content["tags"] = list(d.service_tags)
+    return {**rec, "content": content}
+
+
+def _record_example(conn, asset_id, source, before, after, feedback=None, notes=None):
+    from server import finalize
+    return finalize.record_training_example(conn, asset_id, source, before, after, feedback=feedback, notes=notes)
 
 
 @router.post("/assets/{asset_id}/decision")
 def decide(asset_id: str, d: Decision):
     """approve (optionally with edits), reject, or send back for another AI pass."""
     new_state = {"approve": "APPROVED", "reject": "REJECTED", "rework": "INGESTED"}[d.action]
+    now = datetime.now(timezone.utc).isoformat()
     with _conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT a.describes, a.alt, a.service_tags, "
+        cur.execute("SELECT a.describes, a.alt, a.service_tags, a.final_output, a.media_kind, "
                     "(SELECT judge_output FROM ai_evaluations e WHERE e.asset_id = a.asset_id "
                     " ORDER BY evaluated_at DESC LIMIT 1) AS judge FROM assets a WHERE asset_id = %s", (asset_id,))
         prior = cur.fetchone()
         if not prior:
-            raise HTTPException(status_code=404, detail="Asset not found")
+            raise HTTPException(status_code=NOT_FOUND, detail="Asset not found")
+        before = prior.get("final_output") if isinstance(prior.get("final_output"), dict) else None
         edits = {k: v for k, v in (("describes", d.describes), ("alt", d.alt), ("service_tags", d.service_tags))
                  if v is not None}
+        record = None
+        changed = False
+        if d.action == "approve" and (d.final_output is not None or (edits and before is not None)):
+            record = media_intel.merge_human_edit(before, d.final_output if d.final_output is not None else before)
+            record = _apply_text_edits(record, d) if edits else record
+            record = _normalize_record(record)
+            problems = output_schema.validate_record(record)
+            if problems:
+                raise HTTPException(status_code=422, detail={"message": "Invalid record", "problems": problems})
+            changed = bool(media_intel.diff_records(_strip_human(before), _strip_human(record)))
+            c = record["content"]
+            edits = {"describes": c.get("description"), "alt": c.get("alt_text"), "service_tags": c.get("tags")}
+            d.describes, d.alt, d.service_tags = edits["describes"], edits["alt"], edits["service_tags"]
+        elif d.action == "approve" and edits:
+            changed = True
         if d.action == "approve" and edits:
             cur.execute("UPDATE assets SET describes = COALESCE(%s, describes), alt = COALESCE(%s, alt), "
                         "service_tags = COALESCE(%s, service_tags) WHERE asset_id = %s",
                         (d.describes, d.alt, Json(d.service_tags) if d.service_tags is not None else None, asset_id))
         cur.execute("UPDATE assets SET workflow_state = %s WHERE asset_id = %s", (new_state, asset_id))
-        if edits or d.notes:
+        cur.execute("UPDATE assets SET notes = COALESCE(NULLIF(%s, ''), notes), "
+                    "feedback = COALESCE(NULLIF(%s, ''), feedback), training_candidate = %s WHERE asset_id = %s",
+                    (d.notes, d.feedback, d.training_candidate, asset_id))
+        final = record if record is not None else before
+        if d.action == "rework" and d.reprocess_feedback:
+            cur.execute("UPDATE assets SET rework_feedback = %s WHERE asset_id = %s", (d.reprocess_feedback, asset_id))
+        if final is not None and d.action != "rework" or (final is not None and (d.notes or d.feedback)):
+            final = copy.deepcopy(final)
+            human = dict(final.get("human") or {})
+            if d.notes:
+                human["notes"] = d.notes
+            fb = list(human.get("feedback") or [])
+            if d.feedback:
+                fb.append({"text": d.feedback, "at": now})
+            human.update(feedback=fb, training_candidate=bool(d.training_candidate),
+                         edited=bool(human.get("edited")) or changed)
+            final["human"] = human
+            cur.execute("UPDATE assets SET final_output = %s WHERE asset_id = %s",
+                        (Json(final, dumps=_dumps), asset_id))
+        if edits or d.notes or changed:
+            diff = media_intel.diff_records(_strip_human(before), _strip_human(record)) if record is not None else []
             cur.execute("INSERT INTO human_corrections (asset_id, prior_ai_output, human_approved_output, correction_notes) "
                         "VALUES (%s, %s, %s, %s)",
                         (asset_id, Json({"describes": prior["describes"], "alt": prior["alt"],
                                          "service_tags": prior["service_tags"], "judge": prior["judge"]}, dumps=_dumps),
-                         Json({"action": d.action, **edits}), d.notes or None))
+                         Json({"action": d.action, **edits, **({"diff": diff} if diff else {})}, dumps=_dumps),
+                         d.notes or None))
+        example = None
+        if d.action == "rework" and d.reprocess_feedback:
+            example = _record_example(conn, asset_id, "rework", before, before, d.reprocess_feedback, d.notes or None)
+        elif d.action == "approve" and (changed or d.training_candidate):
+            example = _record_example(conn, asset_id, "edit" if changed else "flag", before,
+                                      record if record is not None else before,
+                                      d.feedback or None, d.notes or None)
+        if example is None and d.feedback and d.action != "rework":
+            example = _record_example(conn, asset_id, "feedback", before,
+                                      record if record is not None else before, d.feedback, d.notes or None)
         conn.commit()
     logger.info("Review decision; asset_id=%s action=%s state=%s", asset_id, d.action, new_state)
-    return {"status": "success", "state": new_state}
+    return {"status": "success", "state": new_state, "training_example": _clean(example)}
 
 
 def _dumps(obj):

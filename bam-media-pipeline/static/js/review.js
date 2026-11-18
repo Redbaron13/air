@@ -34,13 +34,14 @@ document.querySelectorAll(".tab-btn").forEach((b) => b.addEventListener("click",
 function showTab(name) {
   currentTab = name;
   document.querySelectorAll(".tab-btn").forEach((b) => b.setAttribute("aria-selected", b.dataset.tab === name));
-  for (const t of ["pipeline", "review", "groups", "validation", "settings"]) {
+  for (const t of ["pipeline", "review", "groups", "explore", "validation", "settings"]) {
     const s = $(`tab-${t}`);
     s.classList.toggle("hidden", t !== name);
   }
   if (name === "pipeline") loadPipeline();
   if (name === "review") loadAssets();
   if (name === "groups") loadGroups();
+  if (name === "explore" && window.loadExplore) window.loadExplore();
   if (name === "validation") loadValidation();
   if (name === "settings") loadSettings();
 }
@@ -250,7 +251,7 @@ document.addEventListener("keydown", (e) => {
   const k = e.key.toLowerCase();
   if (k === "j") step(1); else if (k === "k") step(-1);
   else if (["a", "r", "w"].includes(k)) {
-    const label = { a: "Approve", r: "Reject", w: "Rework" }[k];
+    const label = { a: "Approve", r: "Reject", w: "Reprocess" }[k];
     [...document.querySelectorAll("#detail button")].find((b) => b.textContent.startsWith(label))?.click();
   }
 });
@@ -348,3 +349,5 @@ async function loadSettings() {
   };
 }
 
+
+window.BAM = { h, clear, api, $, fmt, pct, section, kv, jumpLink, selectAsset, loadAssets, showTab };

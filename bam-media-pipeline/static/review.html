@@ -19,6 +19,7 @@
       <button class="tab-btn border-b-2 border-transparent px-3 py-1" data-tab="pipeline" aria-selected="true">Pipeline</button>
       <button class="tab-btn border-b-2 border-transparent px-3 py-1" data-tab="review" aria-selected="false">Review</button>
       <button class="tab-btn border-b-2 border-transparent px-3 py-1" data-tab="groups" aria-selected="false">Groups</button>
+      <button class="tab-btn border-b-2 border-transparent px-3 py-1" data-tab="explore" aria-selected="false">Explore</button>
       <button class="tab-btn border-b-2 border-transparent px-3 py-1" data-tab="validation" aria-selected="false">Validation</button>
       <button class="tab-btn border-b-2 border-transparent px-3 py-1" data-tab="settings" aria-selected="false">Settings</button>
       <a href="/" class="px-3 py-1 text-slate-500 hover:text-slate-200">Mission Control &rarr;</a>
@@ -82,6 +83,9 @@
     <div id="group-models"></div><div id="group-shoots"></div><div id="group-locations"></div>
   </section>
 
+  <!-- EXPLORE -->
+  <section id="tab-explore" class="hidden flex-1 overflow-auto space-y-3"></section>
+
   <!-- VALIDATION -->
   <section id="tab-validation" class="hidden flex-1 overflow-auto">
     <div id="validation-summary" class="flex gap-2 mb-2 text-xs"></div>
@@ -96,5 +100,6 @@
   </section>
 
   <script src="/js/review.js"></script>
+  <script src="/js/intel.js"></script>
 </body>
 </html>
