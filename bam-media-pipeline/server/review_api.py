@@ -317,6 +317,9 @@ def validation():
 
 
 class Decision(BaseModel):
+    expected_state: str = Field(max_length=32)
+    rights_confirmed: bool = False
+    metadata_confirmed: bool = False
     action: str = Field(pattern="^(approve|reject|rework)$")
     notes: str = Field(default="", max_length=4000)
     describes: str | None = Field(default=None, max_length=4000)
@@ -329,12 +332,21 @@ def decide(asset_id: str, d: Decision):
     """approve (optionally with edits), reject, or send back for another AI pass."""
     new_state = {"approve": "APPROVED", "reject": "REJECTED", "rework": "INGESTED"}[d.action]
     with _conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT a.describes, a.alt, a.service_tags, "
+        cur.execute("SELECT a.workflow_state, a.describes, a.alt, a.service_tags, "
                     "(SELECT judge_output FROM ai_evaluations e WHERE e.asset_id = a.asset_id "
-                    " ORDER BY evaluated_at DESC LIMIT 1) AS judge FROM assets a WHERE asset_id = %s", (asset_id,))
+                    " ORDER BY evaluated_at DESC LIMIT 1) AS judge FROM assets a WHERE asset_id = %s FOR UPDATE", (asset_id,))
         prior = cur.fetchone()
         if not prior:
             raise HTTPException(status_code=404, detail="Asset not found")
+        if prior["workflow_state"] != d.expected_state:
+            raise HTTPException(status_code=409, detail="Asset changed; reload before deciding")
+        if d.action == "approve":
+            if prior["workflow_state"] != "PENDING_HUMAN":
+                raise HTTPException(status_code=409, detail="Asset is not awaiting human review")
+            if not d.rights_confirmed or not d.metadata_confirmed:
+                raise HTTPException(status_code=422, detail="Confirm media rights and reviewed metadata")
+            if not (d.alt if d.alt is not None else prior["alt"] or "").strip():
+                raise HTTPException(status_code=422, detail="Reviewed alt text is required")
         edits = {k: v for k, v in (("describes", d.describes), ("alt", d.alt), ("service_tags", d.service_tags))
                  if v is not None}
         if d.action == "approve" and edits:
@@ -342,12 +354,12 @@ def decide(asset_id: str, d: Decision):
                         "service_tags = COALESCE(%s, service_tags) WHERE asset_id = %s",
                         (d.describes, d.alt, Json(d.service_tags) if d.service_tags is not None else None, asset_id))
         cur.execute("UPDATE assets SET workflow_state = %s WHERE asset_id = %s", (new_state, asset_id))
-        if edits or d.notes:
-            cur.execute("INSERT INTO human_corrections (asset_id, prior_ai_output, human_approved_output, correction_notes) "
-                        "VALUES (%s, %s, %s, %s)",
-                        (asset_id, Json({"describes": prior["describes"], "alt": prior["alt"],
-                                         "service_tags": prior["service_tags"], "judge": prior["judge"]}, dumps=_dumps),
-                         Json({"action": d.action, **edits}), d.notes or None))
+        # Record every decision, even without text edits.
+        cur.execute("INSERT INTO human_corrections (asset_id, prior_ai_output, human_approved_output, correction_notes) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (asset_id, Json({"describes": prior["describes"], "alt": prior["alt"],
+                                     "service_tags": prior["service_tags"], "judge": prior["judge"]}, dumps=_dumps),
+                     Json({"action": d.action, "reviewer": "operator", "at": datetime.now().isoformat(), "prior_state": prior["workflow_state"], "rights_confirmed": d.rights_confirmed, "metadata_confirmed": d.metadata_confirmed, **edits}), d.notes or None))
         conn.commit()
     logger.info("Review decision; asset_id=%s action=%s state=%s", asset_id, d.action, new_state)
     return {"status": "success", "state": new_state}
@@ -355,3 +367,4 @@ def decide(asset_id: str, d: Decision):
 
 def _dumps(obj):
     return json.dumps(obj, default=str)
+

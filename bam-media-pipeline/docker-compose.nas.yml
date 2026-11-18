@@ -26,6 +26,14 @@ services:
       REDIS_URL: ${REDIS_URL:?Required}
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
       BAM_VISION_BACKEND: ${BAM_VISION_BACKEND:-ollama}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-}
+      OPENROUTER_MAX_REQUESTS_PER_DAY: ${OPENROUTER_MAX_REQUESTS_PER_DAY:-10}
+      OPENROUTER_MIN_INTERVAL_SECONDS: ${OPENROUTER_MIN_INTERVAL_SECONDS:-6}
+      OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-gemma3:4b}
+      OLLAMA_JUDGE_MODEL: ${OLLAMA_JUDGE_MODEL:-gemma3:4b}
+      PIPELINE_OPERATOR_TOKEN: ${PIPELINE_OPERATOR_TOKEN:?Required}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3080,http://127.0.0.1:3080}
       BAM_VISION_MAX_EDGE: ${BAM_VISION_MAX_EDGE:-1600}
       BAM_VISION_LIMIT: ${BAM_VISION_LIMIT:-180}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -45,8 +53,9 @@ services:
       - ${PIPELINE_STORAGE_PATH:?Required}/exports:/storage/exports
     command: uvicorn server.app:app --host 0.0.0.0 --port 3080
   derivative-worker:
+    profiles: [derivatives]
     build: {context: ./scripts}
-    restart: unless-stopped
+    restart: "no"
     depends_on: [postgres, redis]
     environment:
       DATABASE_URL: ${DATABASE_URL:?Required}
@@ -59,3 +68,4 @@ services:
 volumes:
   pg_data:
   redis_data:
+

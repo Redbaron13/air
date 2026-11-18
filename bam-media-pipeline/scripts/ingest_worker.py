@@ -6,7 +6,7 @@ from datetime import datetime
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-DB_DSN = os.environ["DATABASE_URL"]
+DB_DSN = os.getenv("DATABASE_URL")
 
 MEDIA_EXT = {
     ".jpg", ".jpeg", ".png", ".webp", ".avif", ".tif", ".tiff", ".heic", ".dng",
@@ -14,7 +14,9 @@ MEDIA_EXT = {
 }
 
 def get_db():
-    return psycopg2.connect(DB_DSN, cursor_factory=RealDictCursor)
+    if not DB_DSN:
+        raise RuntimeError("DATABASE_URL is required for ingestion")
+    return psycopg2.connect(DB_DSN, cursor_factory=RealDictCursor, connect_timeout=10)
 
 SUPPORTED_EXTENSIONS = tuple(sorted(MEDIA_EXT))
 
@@ -47,18 +49,18 @@ def compute_sha256(filepath: str) -> str:
     return hasher.hexdigest()
 
 def extract_exif(filepath: str) -> dict:
-    cmd = ["exiftool", "-j", "-DateTimeOriginal", "-GPSLatitude", "-GPSLongitude", "-GPSAltitude", "-Model", "-FocalLength", "-GimbalPitchDegree", filepath]
+    cmd = ["exiftool", "-j", "-n", "-DateTimeOriginal", "-GPSLatitude", "-GPSLongitude", "-GPSAltitude", "-Model", "-FocalLength", "-GimbalPitchDegree", filepath]
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=True)
         data = json.loads(res.stdout)[0]
         return {
-            "captured_at": data.get("DateTimeOriginal", datetime.utcnow().isoformat()),
-            "lat": float(data.get("GPSLatitude", 0.0) or 0.0),
-            "lon": float(data.get("GPSLongitude", 0.0) or 0.0),
-            "alt": float(data.get("GPSAltitude", 0.0) or 0.0),
+            "captured_at": datetime.strptime(data["DateTimeOriginal"], "%Y:%m:%d %H:%M:%S").isoformat() if data.get("DateTimeOriginal") else None,
+            "lat": float(data["GPSLatitude"]) if data.get("GPSLatitude") is not None else None,
+            "lon": float(data["GPSLongitude"]) if data.get("GPSLongitude") is not None else None,
+            "alt": float(data["GPSAltitude"]) if data.get("GPSAltitude") is not None else None,
             "sensor": data.get("Model", "Unknown"),
             "focal_length": data.get("FocalLength", "Unknown"),
-            "gimbal_pitch": float(data.get("GimbalPitchDegree", 0.0) or 0.0),
+            "gimbal_pitch": float(data["GimbalPitchDegree"]) if data.get("GimbalPitchDegree") is not None else None,
         }
     except Exception:
         return {}
@@ -111,3 +113,4 @@ if __name__ == "__main__":
             print(f"[SKIP] No supported media files found for: {path}")
         for target in targets:
             ingest_file(target)
+

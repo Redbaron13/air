@@ -173,8 +173,10 @@ async function selectAsset(id) {
   const altEdit = h("input", { class: "w-full bg-slate-800 rounded p-1 text-xs" }); altEdit.value = a.alt || "";
   const tagsEdit = h("input", { class: "w-full bg-slate-800 rounded p-1 text-xs" }); tagsEdit.value = (a.service_tags || []).join(", ");
   const decide = async (action) => {
-    const body = { action, notes: notes.value };
+    const body = { action, notes: notes.value, expected_state: a.workflow_state };
     if (action === "approve") {
+      if (!confirm("I have reviewed this media, confirmed publication rights, and checked its metadata and alt text.")) return;
+      body.rights_confirmed = true; body.metadata_confirmed = true;
       if (descEdit.value !== (a.describes || "")) body.describes = descEdit.value;
       if (altEdit.value !== (a.alt || "")) body.alt = altEdit.value;
       const tags = tagsEdit.value.split(",").map((t) => t.trim()).filter(Boolean);
@@ -304,3 +306,4 @@ async function loadValidation() {
 startEvents();
 loadPipeline();
 setInterval(() => { if (currentTab === "pipeline") loadPipeline(); }, 15000);
+
