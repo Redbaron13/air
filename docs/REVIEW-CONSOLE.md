@@ -14,7 +14,11 @@ Local GUI at `http://<host>:3080/review.html` (linked from Mission Control) for 
 
 ## Grouping
 - Model/map parts share an identifier: an AI/human supplied `group_id` (in the judge/deep output) if present, otherwise the filename with part/tile/chunk/LOD/`1of4`/`(2)` suffixes removed (`Bridge_part1.glb`, `Bridge_part2.glb` → `bridge`). Groups with only one part are flagged.
-- Location clusters: single-linkage within `REVIEW_GROUP_RADIUS_M` (default 150 m).
+- Location clusters: single-linkage within the grouping radius (default 150 m, from `REVIEW_GROUP_RADIUS_M`).
 
 ## Configuration
 `REVIEW_GROUP_RADIUS_M`, `REVIEW_STUCK_MINUTES` (default 60), `ORIGINALS_DIR`, `EXPORTS_DIR`. Media is only served from the staging and originals directories; browsers cannot preview DNG/HEIC/3D files, which show a notice instead.
+
+## Settings tab
+
+Grouping radius, shoot-boundary override (flags assets farther than this from their shoot centroid; blank uses each shoot's own radius), stuck-in-ingest minutes, low-agreement threshold and minimum alt-text length are editable in the Settings tab. Values are saved to `review_settings.json` in `EXPORTS_DIR`; the environment variables above only provide the initial defaults.

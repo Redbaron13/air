@@ -30,8 +30,7 @@ ORIGINALS_DIR = Path(os.getenv("ORIGINALS_DIR", "/storage/originals")).resolve()
 EXPORTS_DIR = Path(os.getenv("EXPORTS_DIR", "/storage/exports")).resolve()
 BROWSER_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif"}
 BROWSER_VIDEO_EXT = {".mp4", ".m4v", ".mov"}
-GROUP_RADIUS_M = float(os.getenv("REVIEW_GROUP_RADIUS_M", "150"))
-STUCK_MINUTES = int(os.getenv("REVIEW_STUCK_MINUTES", "60"))
+SETTINGS_FILE = EXPORTS_DIR / "review_settings.json"
 HISTORY_KEY = "pipeline_events_history"
 
 # Latest evaluation per asset joined onto the asset row.
@@ -45,6 +44,27 @@ ASSET_SQL = """
            ORDER BY x.evaluated_at DESC LIMIT 1
       ) e ON TRUE
 """
+
+
+class ReviewSettings(BaseModel):
+    """User-tunable thresholds for grouping and validation (editable from the console)."""
+    group_radius_m: float = Field(float(os.getenv("REVIEW_GROUP_RADIUS_M", "150")), gt=0, le=1000000)
+    shoot_radius_m: float | None = Field(default=None, gt=0, le=1000000)
+    stuck_minutes: int = Field(int(os.getenv("REVIEW_STUCK_MINUTES", "60")), ge=1, le=10000)
+    low_agreement: float = Field(0.5, ge=0, le=1)
+    min_alt_length: int = Field(10, ge=0, le=1000)
+
+
+def get_settings() -> ReviewSettings:
+    try:
+        return ReviewSettings(**json.loads(SETTINGS_FILE.read_text()))
+    except Exception:
+        return ReviewSettings()
+
+
+def _validate_kwargs(cfg: ReviewSettings) -> dict:
+    return {"stuck_minutes": cfg.stuck_minutes, "shoot_radius_m": cfg.shoot_radius_m,
+            "low_agreement": cfg.low_agreement, "min_alt_length": cfg.min_alt_length}
 
 
 def _conn():
@@ -91,12 +111,13 @@ def _allowed_file(source_path: str) -> Path | None:
 
 def _findings(assets):
     shoots = _shoots()
+    cfg = get_settings()
     result = {}
     for a in assets:
         exists = _allowed_file(a.get("source_path")) is not None
         result[a["asset_id"]] = validate_asset(
-            a, shoots.get(a.get("shoot_id")), stuck_minutes=STUCK_MINUTES,
-            copies=int(a.get("copy_count") or 0), file_exists=exists,
+            a, shoots.get(a.get("shoot_id")), copies=int(a.get("copy_count") or 0), file_exists=exists,
+            **_validate_kwargs(cfg),
         )
     return result
 
@@ -174,8 +195,16 @@ async def health():
     except Exception as exc:
         add("Local AI (Ollama)", False, f"unreachable: {str(exc)[:120]}", "warn")
     from server import app as main_app
-    cloud = main_app.has_cloud_backend()
-    add("Cloud AI backend", cloud, "credentials configured" if cloud else "no cloud credentials detected", "ok" if cloud else "warn")
+    backend = os.getenv("BAM_VISION_BACKEND", "auto").strip().lower()
+    if backend == "ollama":
+        add("Cloud AI backend", True, "not used (BAM_VISION_BACKEND=ollama)", "ok")
+    elif main_app.cloud_credentials_configured(backend):
+        add("Cloud AI backend", True, f"credentials configured (backend: {backend})", "ok")
+    else:
+        forced = backend != "auto"
+        add("Cloud AI backend", False,
+            f"backend '{backend}' is selected but its credentials are missing" if forced
+            else "no cloud credentials detected", "fail" if forced else "warn")
     for label, path in (("Staging dir", ACTIVE_DIR), ("Originals dir", ORIGINALS_DIR), ("Exports dir", EXPORTS_DIR)):
         add(label, path.exists(), str(path), "ok" if path.exists() else "warn")
     manifest = EXPORTS_DIR / "assets.manifest.json"
@@ -184,6 +213,27 @@ async def health():
     else:
         add("Website manifest", False, "not generated yet", "warn")
     return {"checks": checks}
+
+
+@router.get("/settings")
+def read_settings():
+    return {"settings": get_settings().model_dump(), "defaults": ReviewSettings.model_construct().model_dump()}
+
+
+@router.put("/settings")
+def update_settings(cfg: ReviewSettings):
+    try:
+        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SETTINGS_FILE.write_text(json.dumps(cfg.model_dump()))
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not save settings: {exc}") from exc
+    return {"settings": cfg.model_dump()}
+
+
+@router.delete("/settings")
+def reset_settings():
+    SETTINGS_FILE.unlink(missing_ok=True)
+    return {"settings": get_settings().model_dump()}
 
 
 @router.get("/events")
@@ -231,9 +281,10 @@ def asset_detail(asset_id: str):
     evals = _fetch("SELECT * FROM ai_evaluations WHERE asset_id = %s ORDER BY evaluated_at DESC", (asset_id,))
     copies = _fetch("SELECT * FROM asset_copies WHERE parent_asset_id = %s ORDER BY width", (asset_id,))
     corrections = _fetch("SELECT * FROM human_corrections WHERE asset_id = %s", (asset_id,))
-    findings = validate_asset(a, shoots.get(a["shoot_id"]), stuck_minutes=STUCK_MINUTES,
-                              copies=len(copies), file_exists=_allowed_file(a["source_path"]) is not None)
-    groups = build_groups(assets, GROUP_RADIUS_M)
+    cfg = get_settings()
+    findings = validate_asset(a, shoots.get(a["shoot_id"]), copies=len(copies),
+                              file_exists=_allowed_file(a["source_path"]) is not None, **_validate_kwargs(cfg))
+    groups = build_groups(assets, cfg.group_radius_m)
     same_shoot = [x for x in assets if a["shoot_id"] and x["shoot_id"] == a["shoot_id"] and x["asset_id"] != asset_id]
     model_group = next((m for m in groups["models"] if asset_id in m["asset_ids"]), None)
     by_id = {x["asset_id"]: x for x in assets}
@@ -249,7 +300,7 @@ def asset_detail(asset_id: str):
         "human_corrections": corrections,
         "shoot": shoots.get(a["shoot_id"]),
         "same_shoot": [{"asset_id": x["asset_id"], "filename": x["original_filename"]} for x in same_shoot[:60]],
-        "nearby": nearby_assets(a, assets, GROUP_RADIUS_M)[:60],
+        "nearby": nearby_assets(a, assets, cfg.group_radius_m)[:60],
         "model_group": {"key": model_group["key"], "parts": parts} if model_group else None,
         "findings": findings,
         "stages": stage_progress(a, len(copies)),
@@ -294,12 +345,13 @@ def asset_exif(asset_id: str):
 def groups():
     assets = _fetch(ASSET_SQL)
     findings = _findings(assets)
-    g = build_groups(assets, GROUP_RADIUS_M)
+    cfg = get_settings()
+    g = build_groups(assets, cfg.group_radius_m)
     by_id = {a["asset_id"]: _brief(a, findings) for a in assets}
     shoots = _shoots()
     for s in g["shoots"]:
         s["info"] = _clean(shoots.get(s["key"]))
-    return {"radius_m": GROUP_RADIUS_M, "groups": g, "assets": by_id}
+    return {"radius_m": cfg.group_radius_m, "groups": g, "assets": by_id}
 
 
 @router.get("/validation")

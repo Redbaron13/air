@@ -147,8 +147,13 @@ def backend_of(asset: dict) -> str:
 
 
 def validate_asset(asset: dict, shoot: dict | None = None, now: datetime | None = None,
-                   stuck_minutes: int = 60, copies: int = 0, file_exists: bool | None = None) -> list[dict]:
-    """Return findings [{level: fail|warn|info, code, message}] for one asset."""
+                   stuck_minutes: int = 60, copies: int = 0, file_exists: bool | None = None,
+                   shoot_radius_m: float | None = None, low_agreement: float = 0.5,
+                   min_alt_length: int = 10) -> list[dict]:
+    """Return findings [{level: fail|warn|info, code, message}] for one asset.
+
+    shoot_radius_m, when set, overrides each shoot's own radius_meters.
+    """
     now = now or datetime.utcnow()
     out = []
 
@@ -170,7 +175,7 @@ def validate_asset(asset: dict, shoot: dict | None = None, now: datetime | None 
         else:
             if not 0.0 <= float(score) <= 1.0:
                 add("fail", "score_range", f"Agreement score {score} is outside 0-1.")
-            elif float(score) < 0.5:
+            elif float(score) < low_agreement:
                 add("warn", "low_agreement", f"Low AI agreement ({float(score):.0%}); review carefully.")
             judge = asset.get("judge_output")
             if isinstance(judge, dict) and judge.get("agreementScore") is not None:
@@ -194,14 +199,16 @@ def validate_asset(asset: dict, shoot: dict | None = None, now: datetime | None 
             add("info", "no_sensor", "Sensor/model not captured from EXIF.")
     if not asset.get("shoot_id"):
         add("info", "no_shoot", "Not assigned to a project/shoot.")
-    elif shoot and has_gps(asset) and shoot.get("radius_meters"):
-        d = haversine_m(float(asset["latitude"]), float(asset["longitude"]),
-                        float(shoot["centroid_lat"]), float(shoot["centroid_lon"]))
-        if d > 2 * float(shoot["radius_meters"]):
-            add("warn", "outside_shoot", f"{d:.0f} m from shoot centroid (radius {shoot['radius_meters']:.0f} m).")
+    elif shoot and has_gps(asset):
+        radius = shoot_radius_m or shoot.get("radius_meters")
+        if radius and shoot.get("centroid_lat") is not None and shoot.get("centroid_lon") is not None:
+            d = haversine_m(float(asset["latitude"]), float(asset["longitude"]),
+                            float(shoot["centroid_lat"]), float(shoot["centroid_lon"]))
+            if d > float(radius):
+                add("warn", "outside_shoot", f"{d:.0f} m from shoot centroid (radius {float(radius):.0f} m).")
 
     if state == "APPROVED":
-        if len((asset.get("alt") or "").strip()) < 10:
+        if len((asset.get("alt") or "").strip()) < min_alt_length:
             add("warn", "short_alt", "Approved with missing or very short alt text.")
         if not (asset.get("describes") or "").strip():
             add("warn", "no_describes", "Approved with no description.")

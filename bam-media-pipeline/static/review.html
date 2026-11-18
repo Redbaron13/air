@@ -20,6 +20,7 @@
       <button class="tab-btn border-b-2 border-transparent px-3 py-1" data-tab="review" aria-selected="false">Review</button>
       <button class="tab-btn border-b-2 border-transparent px-3 py-1" data-tab="groups" aria-selected="false">Groups</button>
       <button class="tab-btn border-b-2 border-transparent px-3 py-1" data-tab="validation" aria-selected="false">Validation</button>
+      <button class="tab-btn border-b-2 border-transparent px-3 py-1" data-tab="settings" aria-selected="false">Settings</button>
       <a href="/" class="px-3 py-1 text-slate-500 hover:text-slate-200">Mission Control &rarr;</a>
     </nav>
   </header>
@@ -85,6 +86,13 @@
   <section id="tab-validation" class="hidden flex-1 overflow-auto">
     <div id="validation-summary" class="flex gap-2 mb-2 text-xs"></div>
     <table class="w-full text-xs"><thead class="text-slate-500 text-left"><tr><th class="p-1">Level</th><th>Check</th><th>Asset</th><th>State</th><th>Detail</th></tr></thead><tbody id="validation-rows"></tbody></table>
+  </section>
+
+  <!-- SETTINGS -->
+  <section id="tab-settings" class="hidden flex-1 overflow-auto">
+    <p class="text-xs text-slate-500 mb-2">Thresholds used for grouping and validation. Changes are saved on the server and apply to every tab immediately.</p>
+    <form id="settings-form" class="bg-slate-900 border border-slate-800 rounded p-3 max-w-2xl space-y-3"></form>
+    <div id="settings-status" class="text-xs mt-2"></div>
   </section>
 
   <script src="/js/review.js"></script>

@@ -69,6 +69,21 @@ def has_cloud_backend() -> bool:
     )
 
 
+def cloud_credentials_configured(backend: str | None = None) -> bool:
+    """True when the credentials required by the (forced or auto-detected) cloud backend exist."""
+    backend = (backend or os.getenv("BAM_VISION_BACKEND", "auto")).strip().lower()
+    azure = bool(os.getenv("AZURE_OPENAI_ENDPOINT") and (os.getenv("AZURE_OPENAI_API_KEY") or os.getenv("AZURE_OPENAI_KEY")))
+    openai = bool(os.getenv("OPENAI_API_KEY"))
+    anthropic = bool(os.getenv("ANTHROPIC_API_KEY"))
+    if backend == "azure":
+        return azure
+    if backend == "openai":
+        return openai
+    if backend == "anthropic":
+        return anthropic
+    return azure or openai or anthropic
+
+
 def orchestrator_script() -> str:
     if has_cloud_backend():
         return "/app/scripts/cloud_fallback_worker.py"
@@ -78,10 +93,13 @@ async def log_to_gui(message: str):
     """Publishes log messages to Redis so they stream to the GUI terminal via WebSockets."""
     try:
         r = aioredis.from_url(REDIS_URL)
-        await r.publish("pipeline_events", message)
-        # Keep recent events so the review console can show history after a reload.
-        await r.lpush("pipeline_events_history", json.dumps({"t": datetime.now(timezone.utc).isoformat(), "msg": message}))
-        await r.ltrim("pipeline_events_history", 0, 499)
+        # A single MULTI/EXEC keeps history order identical to publish order.
+        # History lets the review console show recent events after a reload.
+        async with r.pipeline(transaction=True) as pipe:
+            pipe.publish("pipeline_events", message)
+            pipe.lpush("pipeline_events_history", json.dumps({"t": datetime.now(timezone.utc).isoformat(), "msg": message}))
+            pipe.ltrim("pipeline_events_history", 0, 499)
+            await pipe.execute()
     except Exception as e:
         logger.warning("Unable to publish dashboard event: %s", e)
 
