@@ -83,16 +83,24 @@ async def log_to_gui(message: str):
     """Publishes log messages to Redis so they stream to the GUI terminal via WebSockets."""
     try:
         r = aioredis.from_url(REDIS_URL)
-        await r.publish("pipeline_events", message)
-        # Keep recent events so the review console can show history after a reload.
-        await r.lpush("pipeline_events_history", json.dumps({"t": datetime.now(timezone.utc).isoformat(), "msg": message}))
-        await r.ltrim("pipeline_events_history", 0, 499)
+        # A single MULTI/EXEC keeps history order identical to publish order.
+        # History lets the review console show recent events after a reload.
+        async with r.pipeline(transaction=True) as pipe:
+            pipe.publish("pipeline_events", message)
+            pipe.lpush("pipeline_events_history", json.dumps({"t": datetime.now(timezone.utc).isoformat(), "msg": message}))
+            pipe.ltrim("pipeline_events_history", 0, 499)
+            await pipe.execute()
     except Exception as e:
         logger.warning("Unable to publish dashboard event: %s", e)
 
 @app.on_event("startup")
 async def startup_event():
     logger.info("Starting API server; active_dir=%s allowed_origins=%s", ACTIVE_DIR, ALLOWED_ORIGINS)
+    try:
+        from server.schema_migrations import ensure_schema
+        await asyncio.to_thread(ensure_schema, os.getenv("DATABASE_URL"))
+    except Exception as e:
+        logger.warning("Schema check skipped (DB unavailable?): %s", e)
     asyncio.create_task(redis_log_subscriber())
 
 async def redis_log_subscriber():

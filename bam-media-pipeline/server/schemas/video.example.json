@@ -1,0 +1,99 @@
+{
+  "classification": {
+    "media_genre": "infrastructure",
+    "shot_type": "aerial_oblique",
+    "scene_type": "outdoor"
+  },
+  "content": {
+    "primary_subjects": [
+      "concrete bridge pier",
+      "river channel"
+    ],
+    "objects": [
+      "bridge deck",
+      "guardrail",
+      "scaffolding"
+    ],
+    "structures": [
+      "highway bridge",
+      "pier cap"
+    ],
+    "materials": [
+      "concrete",
+      "steel"
+    ],
+    "dominant_colors": [
+      "grey",
+      "green"
+    ],
+    "visual_mood": [
+      "calm",
+      "industrial"
+    ],
+    "description": "An oblique aerial view of a highway bridge pier standing in a shallow river. Scaffolding is attached to the pier cap beneath the deck.",
+    "alt_text": "Aerial view of a concrete bridge pier with scaffolding in a river",
+    "tags": [
+      "bridge",
+      "pier",
+      "river",
+      "scaffolding",
+      "inspection"
+    ]
+  },
+  "photogrammetry": {
+    "suitable_for_model": true,
+    "subject_coverage": "partial",
+    "motion_blur": "none",
+    "texture_quality": "good",
+    "notes": "Good overlap candidate; pier face is clearly textured."
+  },
+  "view": {
+    "label": "orbit of bridge pier 2",
+    "facing": "north",
+    "key_objects": [
+      "pier cap",
+      "scaffolding"
+    ]
+  },
+  "quality": {
+    "sharpness": "sharp",
+    "exposure": "good",
+    "usable": true
+  },
+  "confidence": 0.82,
+  "summary": "A drone orbits a highway bridge pier, then climbs to reveal the full span and the river beneath it.",
+  "activity": "Aerial inspection orbit around bridge pier 2 followed by a climb.",
+  "scene_changes": [
+    {
+      "t_s": 12.5,
+      "change": "Camera leaves the pier and rises to show the full span"
+    },
+    {
+      "t_s": 31.5,
+      "change": "View turns toward the river bank"
+    }
+  ],
+  "camera_motion": "orbit then ascend",
+  "subjects": [
+    "bridge pier",
+    "bridge deck",
+    "river"
+  ],
+  "timeline": [
+    {
+      "t_start_s": 0.0,
+      "t_end_s": 12.5,
+      "what_happens": "Drone circles pier 2 at close range, scaffolding visible."
+    },
+    {
+      "t_start_s": 12.5,
+      "t_end_s": 31.5,
+      "what_happens": "Drone climbs and shows the full bridge span."
+    },
+    {
+      "t_start_s": 31.5,
+      "t_end_s": 45.0,
+      "what_happens": "Camera pans across the river bank and vegetation."
+    }
+  ]
+}

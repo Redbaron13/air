@@ -34,14 +34,16 @@ document.querySelectorAll(".tab-btn").forEach((b) => b.addEventListener("click",
 function showTab(name) {
   currentTab = name;
   document.querySelectorAll(".tab-btn").forEach((b) => b.setAttribute("aria-selected", b.dataset.tab === name));
-  for (const t of ["pipeline", "review", "groups", "validation"]) {
+  for (const t of ["pipeline", "review", "groups", "explore", "validation", "settings"]) {
     const s = $(`tab-${t}`);
     s.classList.toggle("hidden", t !== name);
   }
   if (name === "pipeline") loadPipeline();
   if (name === "review") loadAssets();
   if (name === "groups") loadGroups();
+  if (name === "explore" && window.loadExplore) window.loadExplore();
   if (name === "validation") loadValidation();
+  if (name === "settings") loadSettings();
 }
 
 // ---- Pipeline tab
@@ -133,7 +135,7 @@ function renderList() {
     h("div", { class: "flex justify-between" }, h("span", { class: "font-mono truncate" }, a.filename),
       h("span", { class: scoreClass(a.score) }, pct(a.score))),
     h("div", { class: "text-[10px] text-slate-500 flex gap-2" },
-      h("span", {}, a.kind), h("span", {}, a.state), h("span", {}, a.backend), a.gps ? h("span", {}, "\ud83d\udccd") : h("span", { class: "text-amber-500" }, "no GPS"),
+      h("span", {}, a.kind), h("span", {}, a.state), h("span", {}, a.backend), typeof angleBadge === "function" ? angleBadge(a.drone_angle) : null, a.gps ? h("span", {}, "\ud83d\udccd") : h("span", { class: "text-amber-500" }, "no GPS"),
       a.fail ? h("span", { class: "lvl-fail" }, `${a.fail} fail`) : null, a.warn ? h("span", { class: "lvl-warn" }, `${a.warn} warn`) : null))));
 }
 function step(delta) {
@@ -211,7 +213,8 @@ async function selectAsset(id) {
   clear(preview).append(media);
 
   const exifBox = h("div", { class: "text-xs text-slate-500" }, "Reading EXIF from file...");
-  const gps = a.latitude && a.longitude && !(Number(a.latitude) === 0 && Number(a.longitude) === 0);
+  const hasCoord = (v) => v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v));
+  const gps = hasCoord(a.latitude) && hasCoord(a.longitude) && !(Number(a.latitude) === 0 && Number(a.longitude) === 0);
   box.append(h("div", { class: "grid grid-cols-2 gap-3" }, section("Media", preview),
     section("Metadata (EXIF stored in database)", kv([["Captured", a.captured_at], ["Sensor", a.sensor_model], ["Focal length", a.focal_length], ["Gimbal pitch", a.gimbal_pitch],
       ["Altitude (m)", a.altitude_meters], ["Latitude", gps ? fmt(a.latitude) : "N/A", !gps], ["Longitude", gps ? fmt(a.longitude) : "N/A", !gps], ["SHA-256", a.original_sha256], ["Source path", a.source_path], ["Project / shoot", a.shoot_id]]),
@@ -250,7 +253,7 @@ document.addEventListener("keydown", (e) => {
   const k = e.key.toLowerCase();
   if (k === "j") step(1); else if (k === "k") step(-1);
   else if (["a", "r", "w"].includes(k)) {
-    const label = { a: "Approve", r: "Reject", w: "Rework" }[k];
+    const label = { a: "Approve", r: "Reject", w: "Reprocess" }[k];
     [...document.querySelectorAll("#detail button")].find((b) => b.textContent.startsWith(label))?.click();
   }
 });

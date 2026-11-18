@@ -72,6 +72,18 @@ class ValidationTests(unittest.TestCase):
         shoot = {"centroid_lat": 41.0, "centroid_lon": -74.0, "radius_meters": 300}
         self.assertIn("outside_shoot", self.codes(asset("a"), shoot=shoot))
 
+    def test_outside_shoot_between_one_and_two_radii(self):
+        shoot = {"centroid_lat": 40.0, "centroid_lon": -74.0, "radius_meters": 300}
+        near = asset("a", latitude=40.004, longitude=-74.0)  # ~445 m: beyond 1 radius, inside 2
+        self.assertIn("outside_shoot", self.codes(near, shoot=shoot))
+        self.assertNotIn("outside_shoot", self.codes(near, shoot=shoot, shoot_radius_m=600))
+
+    def test_configurable_thresholds(self):
+        a = asset("a", agreement_score=0.6, screener_output={}, verifier_output={}, judge_output={"x": 1})
+        self.assertNotIn("low_agreement", self.codes({**a, "screener_output": {"x": 1}, "verifier_output": {"x": 1}}))
+        self.assertIn("low_agreement", self.codes({**a, "screener_output": {"x": 1}, "verifier_output": {"x": 1}},
+                                                  low_agreement=0.7))
+
     def test_stuck_and_approved_checks(self):
         old = datetime.utcnow() - timedelta(hours=3)
         self.assertIn("stuck_ingested", self.codes(asset("a", workflow_state="INGESTED", created_at=old)))

@@ -1,0 +1,49 @@
+{
+  "is_correctly_oriented": false,
+  "suggested_axis_rotations": {
+    "x": -90,
+    "y": 0,
+    "z": 180
+  },
+  "orientation_notes": "The bridge deck appears vertical; rotating -90 degrees about X lays it flat and 180 about Z faces the entrance forward.",
+  "structural_and_design_elements": [
+    "twin piers",
+    "box girder deck",
+    "parapet railings",
+    "bearing pads"
+  ],
+  "classification": {
+    "media_genre": "infrastructure",
+    "scene_type": "outdoor"
+  },
+  "content": {
+    "primary_subjects": [
+      "highway bridge"
+    ],
+    "objects": [
+      "deck",
+      "piers"
+    ],
+    "structures": [
+      "box girder bridge"
+    ],
+    "materials": [
+      "concrete",
+      "steel"
+    ],
+    "dominant_colors": [
+      "grey"
+    ],
+    "visual_mood": [
+      "industrial"
+    ],
+    "description": "A reconstructed highway bridge with two piers and a box girder deck. The model has minor holes beneath the deck.",
+    "alt_text": "3D model of a two-pier concrete highway bridge",
+    "tags": [
+      "bridge",
+      "3d model",
+      "concrete"
+    ]
+  },
+  "confidence": 0.7
+}

@@ -61,7 +61,7 @@ def compute_sha256(filepath: str) -> str:
     return digest
 
 def extract_exif(filepath: str) -> dict:
-    cmd = ["exiftool", "-j", "-n", "-DateTimeOriginal", "-GPSLatitude", "-GPSLongitude", "-GPSAltitude", "-Model", "-FocalLength", "-GimbalPitchDegree", filepath]
+    """Capture/camera/drone metadata plus the raw EXIF/XMP dump. {} when nothing could be read."""
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=True)
         data = json.loads(res.stdout)[0]
@@ -116,13 +116,23 @@ def ingest_file(filepath: str, batch_id="A01"):
                     asset_id, unique_stem, original_filename, source_path,
                     original_sha256, media_kind, captured_at, sensor_model,
                     focal_length, gimbal_pitch, latitude, longitude, altitude_meters,
-                    workflow_state
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'INGESTED')
+                    workflow_state,
+                    raw_exif, camera_make, lens_model, iso, shutter_speed, aperture, camera_serial,
+                    gimbal_yaw, flight_yaw, flight_roll, rel_altitude, abs_altitude,
+                    capture_utc_offset, captured_at_local
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'INGESTED',
+                          %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 asset_id, unique_stem, os.path.basename(filepath), filepath,
                 file_hash, kind_for(filepath), meta.get("captured_at"), meta.get("sensor"),
                 meta.get("focal_length"), meta.get("gimbal_pitch"),
-                meta.get("lat"), meta.get("lon"), meta.get("alt")
+                meta.get("lat"), meta.get("lon"), meta.get("alt"),
+                json.dumps(meta.get("raw_exif")) if meta.get("raw_exif") else None,
+                meta.get("make"), meta.get("lens_model"), meta.get("iso"), meta.get("shutter_speed"),
+                meta.get("aperture"), meta.get("camera_serial"),
+                meta.get("gimbal_yaw"), meta.get("flight_yaw"), meta.get("flight_roll"),
+                meta.get("rel_altitude"), meta.get("abs_altitude"),
+                meta.get("capture_utc_offset"), meta.get("captured_at_local"),
             ))
             conn.commit()
             logger.info("Asset ingested; asset_id=%s path=%s", asset_id, filepath)

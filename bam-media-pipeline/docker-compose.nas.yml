@@ -36,6 +36,7 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3080,http://127.0.0.1:3080}
       BAM_VISION_MAX_EDGE: ${BAM_VISION_MAX_EDGE:-1600}
       BAM_VISION_LIMIT: ${BAM_VISION_LIMIT:-180}
+      NEON_DATABASE_URL: ${NEON_DATABASE_URL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
@@ -46,6 +47,7 @@ services:
     volumes:
       - ./server:/app/server:ro
       - ./scripts:/app/scripts:ro
+      - ./sql:/app/sql:ro
       - ./static:/app/static:ro
       - ${ONEDRIVE_SOURCE_PATH:?Required}:/storage/onedrive_mount:ro
       - ${PIPELINE_STORAGE_PATH:?Required}/active:/storage/active

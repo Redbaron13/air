@@ -1,0 +1,64 @@
+{
+  "classification": {
+    "media_genre": "infrastructure",
+    "shot_type": "aerial_oblique",
+    "scene_type": "outdoor"
+  },
+  "content": {
+    "primary_subjects": [
+      "concrete bridge pier",
+      "river channel"
+    ],
+    "objects": [
+      "bridge deck",
+      "guardrail",
+      "scaffolding"
+    ],
+    "structures": [
+      "highway bridge",
+      "pier cap"
+    ],
+    "materials": [
+      "concrete",
+      "steel"
+    ],
+    "dominant_colors": [
+      "grey",
+      "green"
+    ],
+    "visual_mood": [
+      "calm",
+      "industrial"
+    ],
+    "description": "An oblique aerial view of a highway bridge pier standing in a shallow river. Scaffolding is attached to the pier cap beneath the deck.",
+    "alt_text": "Aerial view of a concrete bridge pier with scaffolding in a river",
+    "tags": [
+      "bridge",
+      "pier",
+      "river",
+      "scaffolding",
+      "inspection"
+    ]
+  },
+  "photogrammetry": {
+    "suitable_for_model": true,
+    "subject_coverage": "partial",
+    "motion_blur": "none",
+    "texture_quality": "good",
+    "notes": "Good overlap candidate; pier face is clearly textured."
+  },
+  "view": {
+    "label": "north face of bridge pier 2",
+    "facing": "north",
+    "key_objects": [
+      "pier cap",
+      "scaffolding"
+    ]
+  },
+  "quality": {
+    "sharpness": "sharp",
+    "exposure": "good",
+    "usable": true
+  },
+  "confidence": 0.82
+}
