@@ -71,8 +71,13 @@ def get_exif_data(filepath):
     return telemetry
 
 def call_ollama(model: str, prompt: str, image_path: str = None):
-    payload = {"model": model, "prompt": prompt, "stream": False, "keep_alive": -1, "format": "json"}
-    if image_path and os.path.exists(image_path):
+    from vision_client import call_free_model, validate_output
+    if os.getenv("BAM_VISION_BACKEND", "ollama") == "openrouter":
+        return call_free_model(prompt, image_path)
+    payload = {"model": model, "prompt": prompt, "stream": False, "keep_alive": "5m", "format": "json"}
+    if image_path:
+        if not os.path.isfile(image_path) or os.path.getsize(image_path)>10*1024*1024:
+            raise ValueError("Use an existing preview below 10 MiB")
         import base64
         with open(image_path, "rb") as img:
             payload["images"] = [base64.b64encode(img.read()).decode("utf-8")]
@@ -85,6 +90,7 @@ def call_ollama(model: str, prompt: str, image_path: str = None):
             raise ValueError(f"{model} returned an empty or invalid JSON object")
         logger.info("Ollama response accepted; model=%s fields=%s", model, sorted(response.keys()))
         return response
+        return validate_output(response)
     except Exception as e:
         logger.exception("Ollama call failed; model=%s error=%s", model, e)
         raise
@@ -94,7 +100,7 @@ def execute_phased_batch():
     conn = psycopg2.connect(DB_DSN, cursor_factory=RealDictCursor)
     cur = conn.cursor()
     
-    cur.execute("SELECT * FROM assets WHERE workflow_state = 'INGESTED'")
+    cur.execute("SELECT * FROM assets WHERE workflow_state = 'INGESTED' AND media_kind = 'still'")
     assets = cur.fetchall()
     if not assets:
         logger.info("No INGESTED assets found; batch is complete")
@@ -131,7 +137,7 @@ def execute_phased_batch():
             "camera_pitch": a.get("camera_pitch"),
         })
         altitude_instruction = (
-            f"The verified altitude is {alt} meters. Choose strictly between 'nadir' and 'oblique'."
+            f"Recorded altitude is {alt} meters; datum is not verified. Altitude alone does not establish camera perspective. Use visible geometry and pitch when available."
             if isinstance(alt, (int, float)) and alt > 0
             else "Altitude is unavailable or not positive; infer perspective from the image."
         )
@@ -147,7 +153,7 @@ def execute_phased_batch():
             "primary_subjects": ["specific subject 1", "specific subject 2"],
             "contains_infrastructure_or_architecture": true
         }}"""
-        screener_res[a["asset_id"]] = call_ollama("moondream", prompt, a["source_path"])
+        screener_res[a["asset_id"]] = call_ollama(os.getenv("OLLAMA_SCREENER_MODEL", os.getenv("OLLAMA_VISION_MODEL", "moondream")), prompt, a["source_path"])
         logger.info("Phase 1A complete for asset_id=%s", a["asset_id"])
 
     # Phase 1B: Verifier (LLaVA - Granular Details, 3D Orientation & Aesthetics)
@@ -180,7 +186,7 @@ def execute_phased_batch():
                 "comprehensive_summary": "A concise, 2-sentence professional description of the entire scene."
             }}"""
             
-        verifier_res[a["asset_id"]] = call_ollama("llava", prompt, a["source_path"])
+        verifier_res[a["asset_id"]] = call_ollama(os.getenv("OLLAMA_VERIFIER_MODEL", os.getenv("OLLAMA_VISION_MODEL", "llava")), prompt, a["source_path"])
         logger.info("Phase 1B complete for asset_id=%s", a["asset_id"])
 
     # Phase 1C: Judge (Llama 3.1)
@@ -193,7 +199,7 @@ def execute_phased_batch():
         Do they agree on the core subject and perspective? Return ONLY valid JSON matching this schema exactly:
         {{"reasoning": "Step-by-step explanation of agreements and differences", "agreementScore": 0.85}}"""
         
-        judge_res = call_ollama("llama3.1", prompt)
+        judge_res = call_ollama(os.getenv("OLLAMA_JUDGE_MODEL", "llama3.1"), prompt)
         
         try:
             score = float(judge_res.get("agreementScore", 0.0))

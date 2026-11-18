@@ -8,17 +8,40 @@ from pathlib import Path
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-DB_DSN = os.environ["DATABASE_URL"]
-ACTIVE_DIR = Path(os.getenv("ACTIVE_DIR", "/storage/active")).resolve()
+DB_DSN = os.getenv("DATABASE_URL")
 
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO").upper(),
-    format="%(asctime)sZ %(levelname)s %(name)s %(message)s",
-)
-logger = logging.getLogger("bam.ingest")
+MEDIA_EXT = {
+    ".jpg", ".jpeg", ".png", ".webp", ".avif", ".tif", ".tiff", ".heic", ".dng",
+    ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".glb", ".gltf", ".obj", ".usdz",
+}
 
 def get_db():
-    return psycopg2.connect(DB_DSN, cursor_factory=RealDictCursor)
+    if not DB_DSN:
+        raise RuntimeError("DATABASE_URL is required for ingestion")
+    return psycopg2.connect(DB_DSN, cursor_factory=RealDictCursor, connect_timeout=10)
+
+SUPPORTED_EXTENSIONS = tuple(sorted(MEDIA_EXT))
+
+def iter_ingest_targets(path: str) -> list[str]:
+    if os.path.isfile(path):
+        return [path] if path.lower().endswith(SUPPORTED_EXTENSIONS) else []
+
+    if not os.path.isdir(path):
+        return []
+
+    targets = []
+    for root, _, files in os.walk(path):
+        for name in sorted(files):
+            if name.lower().endswith(SUPPORTED_EXTENSIONS):
+                targets.append(os.path.join(root, name))
+    return targets
+
+def build_asset_identifiers(file_hash: str, batch_id: str = "A01", now: datetime | None = None) -> tuple[str, str]:
+    timestamp = now or datetime.now()
+    unique_stem = file_hash[:8].upper()
+    date_stem = timestamp.strftime("%d%m%y")
+    asset_id = f"{date_stem}-001BAMPHO{batch_id}-{unique_stem}"
+    return unique_stem, asset_id
 
 def compute_sha256(filepath: str) -> str:
     logger.info("Computing SHA-256; path=%s", filepath)
@@ -31,25 +54,32 @@ def compute_sha256(filepath: str) -> str:
     return digest
 
 def extract_exif(filepath: str) -> dict:
-    cmd = ["exiftool", "-j", "-DateTimeOriginal", "-GPSLatitude", "-GPSLongitude", "-GPSAltitude", "-Model", "-FocalLength", "-GimbalPitchDegree", filepath]
+    cmd = ["exiftool", "-j", "-n", "-DateTimeOriginal", "-GPSLatitude", "-GPSLongitude", "-GPSAltitude", "-Model", "-FocalLength", "-GimbalPitchDegree", filepath]
     try:
-        logger.info("Extracting EXIF metadata; path=%s", filepath)
-        res = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=60)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=True)
         data = json.loads(res.stdout)[0]
-        metadata = {
-            "captured_at": data.get("DateTimeOriginal", datetime.utcnow().isoformat()),
-            "lat": float(data.get("GPSLatitude", 0.0)),
-            "lon": float(data.get("GPSLongitude", 0.0)),
-            "alt": float(data.get("GPSAltitude", 0.0)),
+        return {
+            "captured_at": datetime.strptime(data["DateTimeOriginal"], "%Y:%m:%d %H:%M:%S").isoformat() if data.get("DateTimeOriginal") else None,
+            "lat": float(data["GPSLatitude"]) if data.get("GPSLatitude") is not None else None,
+            "lon": float(data["GPSLongitude"]) if data.get("GPSLongitude") is not None else None,
+            "alt": float(data["GPSAltitude"]) if data.get("GPSAltitude") is not None else None,
             "sensor": data.get("Model", "Unknown"),
             "focal_length": data.get("FocalLength", "Unknown"),
-            "gimbal_pitch": float(data.get("GimbalPitchDegree", 0.0)),
+            "gimbal_pitch": float(data["GimbalPitchDegree"]) if data.get("GimbalPitchDegree") is not None else None,
         }
         logger.info("EXIF extraction complete; path=%s sensor=%s", filepath, metadata["sensor"])
         return metadata
     except Exception as exc:
         logger.warning("EXIF extraction failed; path=%s error=%s", filepath, exc)
         return {}
+
+def kind_for(filepath: str) -> str:
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext in {".mp4", ".mov", ".m4v", ".avi", ".mkv"}:
+        return "video"
+    if ext in {".glb", ".gltf", ".obj", ".usdz"}:
+        return "3d_model"
+    return "still"
 
 def ingest_file(filepath: str, batch_id="A01"):
     logger.info("Ingest started; requested_path=%s batch_id=%s", filepath, batch_id)
@@ -63,30 +93,27 @@ def ingest_file(filepath: str, batch_id="A01"):
     filepath = str(resolved_path)
     logger.info("Validated staged file; path=%s", filepath)
     file_hash = compute_sha256(filepath)
-    
+
     with get_db() as conn:
         with conn.cursor() as cur:
-            # Deduplication Check
             cur.execute("SELECT asset_id FROM assets WHERE original_sha256 = %s", (file_hash,))
             if cur.fetchone():
                 logger.info("Duplicate discarded; path=%s sha256=%s", filepath, file_hash)
                 return None
 
             meta = extract_exif(filepath)
-            unique_stem = file_hash[:8].upper()
-            date_stem = datetime.now().strftime("%d%m%y")
-            asset_id = f"{date_stem}-001BAMPHO{batch_id}-{unique_stem}"
+            unique_stem, asset_id = build_asset_identifiers(file_hash, batch_id=batch_id)
 
             cur.execute("""
                 INSERT INTO assets (
                     asset_id, unique_stem, original_filename, source_path,
-                    original_sha256, media_kind, captured_at, sensor_model, 
+                    original_sha256, media_kind, captured_at, sensor_model,
                     focal_length, gimbal_pitch, latitude, longitude, altitude_meters,
                     workflow_state
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'INGESTED')
             """, (
                 asset_id, unique_stem, os.path.basename(filepath), filepath,
-                file_hash, "still", meta.get("captured_at"), meta.get("sensor"),
+                file_hash, kind_for(filepath), meta.get("captured_at"), meta.get("sensor"),
                 meta.get("focal_length"), meta.get("gimbal_pitch"),
                 meta.get("lat"), meta.get("lon"), meta.get("alt")
             ))
@@ -96,11 +123,12 @@ def ingest_file(filepath: str, batch_id="A01"):
 
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) > 1:
-        try:
-            ingest_file(sys.argv[1])
-        except Exception:
-            logger.exception("Ingest worker failed")
-            raise
-    else:
-        logger.error("No source path provided")
+    if len(sys.argv) < 2:
+        raise SystemExit("usage: ingest_worker.py <file-or-folder> [more paths...]")
+    for path in sys.argv[1:]:
+        targets = iter_ingest_targets(path)
+        if not targets:
+            print(f"[SKIP] No supported media files found for: {path}")
+        for target in targets:
+            ingest_file(target)
+

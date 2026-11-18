@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 import httpx
 import psycopg2
@@ -19,6 +20,10 @@ logging.basicConfig(
 logger = logging.getLogger("bam.api")
 
 app = FastAPI()
+from server.access import OperatorGate
+
+app = FastAPI()
+app.add_middleware(OperatorGate)
 ALLOWED_ORIGINS = os.getenv(
     "ALLOWED_ORIGINS", "http://localhost:3080,http://127.0.0.1:3080"
 ).split(",")
@@ -59,6 +64,9 @@ async def log_to_gui(message: str):
     try:
         r = aioredis.from_url(REDIS_URL)
         await r.publish("pipeline_events", message)
+        # Keep recent events so the review console can show history after a reload.
+        await r.lpush("pipeline_events_history", json.dumps({"t": datetime.now(timezone.utc).isoformat(), "msg": message}))
+        await r.ltrim("pipeline_events_history", 0, 499)
     except Exception as e:
         logger.warning("Unable to publish dashboard event: %s", e)
 
@@ -105,7 +113,7 @@ async def websocket_logs(websocket: WebSocket):
 @app.get("/api/storage/staged")
 def get_staged_files():
     """Scans the active directory for staged images, videos, and 3D assets."""
-    active_dir = "/storage/active"
+    active_dir = str(ACTIVE_DIR)
     staged = []
     if os.path.exists(active_dir):
         for root, dirs, files in os.walk(active_dir):
@@ -238,4 +246,3 @@ async def run_orchestrator():
         await log_to_gui(f"[ERROR] Orchestrator failed: {str(e)}")
         return {"error": str(e)}
 
-app.mount("/", StaticFiles(directory="static", html=True), name="static")

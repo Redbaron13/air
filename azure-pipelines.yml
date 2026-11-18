@@ -1,0 +1,32 @@
+trigger: none
+
+schedules:
+  - cron: "0 12 * * *"
+    displayName: Daily Azure vision slice 08:00 ET
+    branches:
+      include:
+        - main
+    always: true
+
+pool:
+  name: Default
+
+variables:
+  BAM_VISION_LIMIT: "180"
+  COMPOSE_DIR: bam-media-pipeline
+
+steps:
+  - checkout: self
+
+  - bash: |
+      set -euo pipefail
+      cd "$(COMPOSE_DIR)"
+      if [ ! -f .env ]; then
+        echo "Place bam-media-pipeline/.env on the self-hosted agent."
+        exit 1
+      fi
+      chmod +x scripts/run_azure_batch.sh
+      BAM_VISION_LIMIT="$(BAM_VISION_LIMIT)" ./scripts/run_azure_batch.sh
+    displayName: Run Azure vision slice
+    env:
+      BAM_VISION_LIMIT: $(BAM_VISION_LIMIT)

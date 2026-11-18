@@ -1,8 +1,7 @@
-const sharp = require("sharp");
-const fs = require("fs");
-const path = require("path");
-const crypto = require("crypto");
-const { Client } = require("pg");
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 
 const db = new Client({ connectionString: process.env.DATABASE_URL });
 
