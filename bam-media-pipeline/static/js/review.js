@@ -307,49 +307,12 @@ async function loadValidation() {
 }
 
 startEvents();
-loadPipeline();
-setInterval(() => { if (currentTab === "pipeline") loadPipeline(); }, 15000);
-
-// ---- Settings tab
-const SETTING_FIELDS = [
-  { key: "group_radius_m", label: "Location grouping radius (m)", help: "Geotagged assets within this distance are clustered together.", step: "any", min: "0.1" },
-  { key: "shoot_radius_m", label: "Shoot boundary override (m)", help: "Flag assets farther than this from their shoot centroid. Leave blank to use each shoot's own radius.", step: "any", min: "0.1", nullable: true },
-  { key: "stuck_minutes", label: "Stuck-in-ingest threshold (minutes)", help: "Warn when an asset waits this long for AI processing.", step: "1", min: "1" },
-  { key: "low_agreement", label: "Low AI agreement threshold (0-1)", help: "Warn when the judge's agreement score falls below this.", step: "0.01", min: "0", max: "1" },
-  { key: "min_alt_length", label: "Minimum alt-text length (characters)", help: "Approved assets with shorter alt text are flagged.", step: "1", min: "0" },
-];
-async function loadSettings() {
-  const form = clear($("settings-form")), status = clear($("settings-status"));
-  let res;
-  try { res = await api("/api/review/settings"); } catch (e) { status.textContent = e.message; return; }
-  const inputs = {};
-  for (const f of SETTING_FIELDS) {
-    const input = h("input", { type: "number", step: f.step, min: f.min, max: f.max, class: "bg-slate-800 rounded p-1 w-40", placeholder: f.nullable ? "per-shoot" : null });
-    input.value = res.settings[f.key] ?? "";
-    inputs[f.key] = input;
-    form.append(h("label", { class: "block" }, h("div", { class: "text-xs font-bold" }, f.label), input,
-      h("div", { class: "text-[11px] text-slate-500" }, f.help, ` Default: ${res.defaults[f.key] ?? "per-shoot"}.`)));
-  }
-  const save = h("button", { type: "submit", class: "bg-emerald-600 hover:bg-emerald-500 rounded px-3 py-1 text-xs font-bold mr-2" }, "Save");
-  const reset = h("button", { type: "button", class: "bg-slate-700 hover:bg-slate-600 rounded px-3 py-1 text-xs font-bold" }, "Reset to defaults");
-  form.append(h("div", {}, save, reset));
-  form.onsubmit = async (ev) => {
-    ev.preventDefault();
-    const body = {};
-    for (const f of SETTING_FIELDS) {
-      const raw = inputs[f.key].value.trim();
-      body[f.key] = raw === "" ? null : Number(raw);
-    }
-    try {
-      await api("/api/review/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      status.className = "text-xs mt-2 text-emerald-400"; status.textContent = "Saved.";
-    } catch (e) { status.className = "text-xs mt-2 text-red-400"; status.textContent = e.message; }
-  };
-  reset.onclick = async () => {
-    try { await api("/api/review/settings", { method: "DELETE" }); await loadSettings(); $("settings-status").textContent = "Reset to defaults."; }
-    catch (e) { status.className = "text-xs mt-2 text-red-400"; status.textContent = e.message; }
-  };
+const requestedAsset = new URLSearchParams(location.search).get("asset_id");
+if (requestedAsset) {
+  showTab("review");
+  $("f-state").value = "";
+  loadAssets().then(() => selectAsset(requestedAsset));
+} else {
+  loadPipeline();
 }
-
-
-window.BAM = { h, clear, api, $, fmt, pct, section, kv, jumpLink, selectAsset, loadAssets, showTab };
+setInterval(() => { if (currentTab === "pipeline") loadPipeline(); }, 15000);

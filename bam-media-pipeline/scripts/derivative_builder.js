@@ -1,73 +1,120 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+const { Client } = require('pg');
+const sharp = require('sharp');
 
-async function buildVariants(asset, outDir, db, sharp = require('sharp')) {
-  if (asset.workflow_state !== 'APPROVED') throw new Error('Human approval required');
-  if (!['still', 'image', 'photo'].includes(asset.media_kind)) throw new Error('Only stills supported');
-  if (!/^[A-Za-z0-9_-]+$/.test(asset.asset_id)) throw new Error('Invalid asset ID');
-  const source = fs.realpathSync(asset.source_path);
-  const root = fs.realpathSync(process.env.ACTIVE_DIR || '/storage/active');
-  const relative = path.relative(root, source);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Source outside staging root');
-  // Verify bytes before rendering, not merely the path recorded at ingestion.
-  const bytes = fs.readFileSync(source);
-  if (hash(bytes) !== asset.original_sha256) throw new Error('Original content changed');
-  const results = [], widths = new Set();
-  for (const width of [400, 800, 1400, 2560]) {
-    const {data, info} = await sharp(bytes).rotate().resize({width, withoutEnlargement:true})
-      .webp({quality:82}).toBuffer({resolveWithObject:true});
-    if (widths.has(info.width)) continue;
-    widths.add(info.width);
-    const sha = hash(data);
-    const key = `bam/web/stills/${asset.asset_id}/${sha}.webp`;
-    const target = path.join(outDir, key);
-    fs.mkdirSync(path.dirname(target), {recursive:true});
-    if (fs.existsSync(target)) {
-      if (hash(fs.readFileSync(target)) !== sha) throw new Error('Existing derivative corrupted');
-    } else {
-      fs.writeFileSync(target, data, {flag:'wx'});
-    }
-    const copyId = hash(Buffer.from(`${asset.asset_id}:${sha}`));
-    const row = {parent_asset_id:asset.asset_id, copy_id:copyId, size_tier:String(width),
-      version_code:'webp-v1', format:'webp', width:info.width, height:info.height,
-      byte_size:data.length, sha256:sha, r2_storage_key:key};
-    if (db) await db.query(`INSERT INTO asset_copies
-      (copy_id,parent_asset_id,size_tier,version_code,format,width,height,byte_size,sha256,r2_storage_key)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (copy_id) DO NOTHING`,
-      [copyId,asset.asset_id,row.size_tier,row.version_code,'webp',info.width,info.height,data.length,sha,key]);
-    results.push(row);
-  }
-  return results;
+const db = new Client({ connectionString: process.env.DATABASE_URL });
+
+function log(level, event, details = {}) {
+  console.log(`${new Date().toISOString()} ${level} bam.derivative ${event} ${JSON.stringify(details)}`);
 }
+
+const VARIANTS = [
+  { sizeTier: "3M4", code: "I10", width: 400, format: "webp", quality: 80 },
+  { sizeTier: "6M7", code: "I10", width: 800, format: "webp", quality: 82 },
+  { sizeTier: "1T2", code: "I12", width: 1400, format: "avif", quality: 78 },
+  { sizeTier: "2D4", code: "I10", width: 2560, format: "webp", quality: 85 }
+];
+
+async function buildVariants(asset, outDir, client = db, imageProcessor = sharp) {
+  const { asset_id: assetId, source_path: sourcePath, unique_stem: uniqueStem, original_sha256: originalSha256 } = asset;
+  log("INFO", "variant_build_started", { assetId, sourcePath, outDir, variants: VARIANTS.length });
+  const activeDir = fs.realpathSync(process.env.ACTIVE_DIR || "/storage/active");
+  const resolvedSource = fs.realpathSync(sourcePath);
+  if (!resolvedSource.startsWith(`${activeDir}${path.sep}`)) {
+    throw new Error(`Source is outside the active staging directory: ${sourcePath}`);
+  }
+  if (!fs.statSync(resolvedSource).isFile()) throw new Error(`Source is not a regular file: ${sourcePath}`);
+  const sourceHash = await hashFile(resolvedSource);
+  if (sourceHash !== originalSha256) throw new Error(`Source hash changed since ingestion: ${sourcePath}`);
+
+  for (const v of VARIANTS) {
+    const copyId = `${v.sizeTier}-${uniqueStem}-${v.code}`;
+    const filename = `${copyId}.${v.format}`;
+    const key = `bam/web/stills/${assetId}/${filename}`;
+    const target = path.join(outDir, key);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+
+    let p = imageProcessor(resolvedSource).rotate().resize(v.width, null, { withoutEnlargement: true });
+    if (v.format === "webp") p = p.webp({ quality: v.quality });
+    else if (v.format === "avif") p = p.avif({ quality: v.quality });
+    else p = p.jpeg({ quality: v.quality });
+
+    log("INFO", "variant_render_started", { assetId, copyId, target, width: v.width, format: v.format });
+    const info = await p.toFile(target);
+    const derivativeHash = await hashFile(target);
+    
+    const values = [copyId, assetId, v.sizeTier, v.code, v.format, info.width, info.height, info.size, derivativeHash, key];
+    const keyParameter = `$${values.length}`;
+    const existing = await client.query("SELECT copy_id FROM asset_copies WHERE copy_id = $1", [copyId]);
+    if (existing.rowCount) {
+      await client.query(`
+        UPDATE asset_copies SET parent_asset_id = $2, size_tier = $3, version_code = $4, format = $5,
+          width = $6, height = $7, byte_size = $8, sha256 = $9, r2_storage_key = ${keyParameter}
+        WHERE copy_id = $1
+      `, values);
+    } else {
+      await client.query(`
+        INSERT INTO asset_copies (copy_id, parent_asset_id, size_tier, version_code, format, width, height, byte_size, sha256, r2_storage_key)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    `, values);
+    }
+    log("INFO", "variant_build_complete", { assetId, copyId, bytes: info.size, sha256: derivativeHash, key });
+  }
+  log("INFO", "variant_build_finished", { assetId });
+}
+
+async function hashFile(filePath) {
+  const digest = crypto.createHash("sha256");
+  for await (const chunk of fs.createReadStream(filePath)) digest.update(chunk);
+  return digest.digest("hex");
+}
+
+async function dispatchApprovedAssets(client = db) {
+  const result = await client.query(`
+    SELECT asset_id, source_path, unique_stem, original_sha256
+    FROM assets
+    WHERE workflow_state = 'APPROVED' AND media_kind = 'still'
+    ORDER BY created_at, asset_id
+  `);
+  let failures = Number(false);
+  for (const asset of result.rows) {
+    try {
+      await buildVariants(asset, process.env.DERIVATIVE_OUTPUT_DIR || "/storage/exports", client);
+    } catch (error) {
+      failures += Number(true);
+      log("ERROR", "variant_build_failed", { assetId: asset.asset_id, error: error.message });
+    }
+  }
+  log("INFO", "derivative_batch_finished", { assets: result.rows.length, failures });
+  return Boolean(failures);
+}
+
+process.on("unhandledRejection", (error) => log("ERROR", "unhandled_rejection", { error: error.message }));
+process.on("uncaughtException", (error) => {
+  log("ERROR", "uncaught_exception", { error: error.message });
+  process.exit(1);
+});
 
 async function main() {
-  const {Client} = require('pg');
-  if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required');
-  const db = new Client({connectionString:process.env.DATABASE_URL, connectionTimeoutMillis:10000});
+  if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is required");
   await db.connect();
-  let count = 0;
   try {
-    // One-shot bounded batch, restartable by an operator or scheduler.
-    for (let i=0; i<Number(process.env.DERIVATIVE_BATCH_SIZE || 20); i++) {
-      await db.query('BEGIN');
-      try {
-        const {rows} = await db.query(`SELECT * FROM assets a WHERE workflow_state='APPROVED'
-          AND media_kind IN ('still','image','photo') AND NOT EXISTS
-          (SELECT 1 FROM asset_copies c WHERE c.parent_asset_id=a.asset_id AND c.version_code='webp-v1')
-          ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1`);
-        if (!rows.length) {await db.query('COMMIT'); break;}
-        await buildVariants(rows[0], process.env.EXPORTS_DIR || '/storage/exports', db);
-        await db.query('COMMIT'); count++;
-      } catch (error) {await db.query('ROLLBACK'); throw error;}
-    }
-    console.log(JSON.stringify({status:'complete',assets:count}));
-  } finally {await db.end();}
+    log("INFO", "worker_started", { dispatcher: "approved asset batch" });
+    log("INFO", "database_connected");
+    const failed = await dispatchApprovedAssets();
+    if (failed) process.exitCode = 1;
+  } finally {
+    await db.end();
+  }
 }
-module.exports = {buildVariants};
-if (require.main === module) main().catch(error => {
-  // Connection errors can include secrets. Print only the error type.
-  console.error(`Derivative batch failed (${error.name}); check configuration and source integrity`);
-  process.exitCode=1;
-});
+
+if (require.main === module) {
+  main().catch((error) => {
+    log("ERROR", "worker_failed", { error: error.message });
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { buildVariants, dispatchApprovedAssets, hashFile };

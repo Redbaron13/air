@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import types
 import unittest
+from unittest.mock import patch
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "emit_manifest.py"
@@ -19,6 +20,11 @@ SPEC.loader.exec_module(emit_manifest)
 
 
 class BuildManifestEntryTests(unittest.TestCase):
+    def test_compile_requires_database_url_only_when_called(self):
+        with patch.dict("os.environ", {"DATABASE_URL": ""}):
+            with self.assertRaisesRegex(RuntimeError, "DATABASE_URL is required"):
+                emit_manifest.compile_manifest()
+
     def test_includes_centroid_when_available(self):
         entry = emit_manifest.build_manifest_entry(
             {
