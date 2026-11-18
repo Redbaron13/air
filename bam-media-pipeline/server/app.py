@@ -236,7 +236,6 @@ async def manage_vram(action: str, model_name: str):
             return {"error": str(e)}
 
 @app.post("/api/pipeline/run-orchestrator")
-@app.post("/api/pipeline/run-cloud", include_in_schema=False)
 async def run_orchestrator():
     """Triggers the multi-phase AI evaluation pipeline."""
     return await _run_orchestrator()
@@ -273,10 +272,10 @@ async def run_orchestrator():
         return {"error": str(e)}
 
 
-async def _run_orchestrator():
+async def _run_orchestrator(force_cloud=False):
     await log_to_gui("[SYSTEM] Starting Vision Orchestrator batch...")
     backend = os.getenv("BAM_VISION_BACKEND", "ollama").strip().lower()
-    if backend in {"azure", "openai", "anthropic", "cloud"}:
+    if force_cloud or backend in {"azure", "openai", "anthropic", "cloud"}:
         script = "/app/scripts/cloud_fallback_worker.py"
     elif backend in {"ollama", "openrouter"}:
         script = "/app/scripts/vision_orchestrator.py"
@@ -335,6 +334,11 @@ async def _run_orchestrator():
             except ProcessLookupError:
                 pass
             await process.wait()
+
+
+@app.post("/api/pipeline/run-cloud")
+async def run_cloud():
+    return await _run_orchestrator(force_cloud=True)
 
 
 app.include_router(review_api.router)
