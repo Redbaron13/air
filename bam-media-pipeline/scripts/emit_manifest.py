@@ -1,11 +1,19 @@
 import os
 import json
+import logging
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-DB_DSN = os.getenv("DATABASE_URL", "postgresql://bam_admin:bam_secure_super_password_2026@postgres:5432/bam_media_factory")
+DB_DSN = os.environ["DATABASE_URL"]
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)sZ %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("bam.manifest")
 
 def compile_manifest(output_path="/storage/exports/assets.manifest.json"):
+    logger.info("Manifest compilation started; output_path=%s", output_path)
     conn = psycopg2.connect(DB_DSN, cursor_factory=RealDictCursor)
     cur = conn.cursor()
 
@@ -17,6 +25,7 @@ def compile_manifest(output_path="/storage/exports/assets.manifest.json"):
         WHERE a.workflow_state = 'APPROVED'
     """)
     assets = cur.fetchall()
+    logger.info("Loaded %d approved assets", len(assets))
 
     manifest = {}
     seen_hashes = set()
@@ -27,13 +36,13 @@ def compile_manifest(output_path="/storage/exports/assets.manifest.json"):
 
         # Build Guardrail 1: Deduplication integrity
         if sha in seen_hashes:
-            print(f"[FATAL BUILD ERROR] Duplicate SHA256 collision detected for: {aid}. Skipping.")
+            logger.error("Duplicate SHA-256 in approved assets; asset_id=%s", aid)
             continue
         seen_hashes.add(sha)
 
         # Build Guardrail 2: Alt text presence
         if not a["alt"] or len(a["alt"].strip()) < 10:
-            print(f"[WARNING] Asset {aid} has empty or insufficient alt text. Skipping manifest entry.")
+            logger.warning("Skipping asset with missing or short alt text; asset_id=%s", aid)
             continue
 
         # Query all confirmed responsive child variants
@@ -43,6 +52,7 @@ def compile_manifest(output_path="/storage/exports/assets.manifest.json"):
         # Extract unique widths and formats
         variants = sorted(list(set([c["width"] for c in copies])))
         formats = sorted(list(set([c["format"] for c in copies])))
+        logger.info("Collected %d variants for asset_id=%s", len(copies), aid)
 
         # Format timestamps safely
         captured_date = a["captured_at"].strftime("%Y-%m-%d") if a["captured_at"] else "unknown"
@@ -73,7 +83,7 @@ def compile_manifest(output_path="/storage/exports/assets.manifest.json"):
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
 
-    print(f"[MANIFEST COMPILED] Wrote {len(manifest)} validated assets to {output_path}")
+    logger.info("Manifest written; assets=%d output_path=%s", len(manifest), output_path)
     conn.close()
 
 if __name__ == "__main__":

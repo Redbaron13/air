@@ -1,9 +1,9 @@
 fastapi
 uvicorn
 httpx
-psycopg2-binary
 redis
 anthropic
 openai
 websockets
 psycopg2-binary==2.9.9
+exifread

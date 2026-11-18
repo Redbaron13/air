@@ -3,7 +3,9 @@ function connectWebSocket() {
   const ws = new WebSocket(`ws://${window.location.host}/ws/logs`);
   ws.onmessage = (e) => {
     const term = document.getElementById("terminal");
-    term.innerHTML += `<div>> ${e.data}</div>`;
+    const line = document.createElement("div");
+    line.textContent = `> ${e.data}`;
+    term.appendChild(line);
     term.scrollTop = term.scrollHeight; // Auto-scroll to latest log
   };
   ws.onclose = () => setTimeout(connectWebSocket, 2000); // Reconnect after 2 seconds if closed
@@ -88,27 +90,40 @@ async function loadStaging() {
       folders[f.folder].push(f);
     });
 
-    let html = '';
+    list.replaceChildren();
     for(const [folder, folderFiles] of Object.entries(folders)) {
       const folderName = folder === '.' ? 'Root Directory' : folder;
-      html += `
-        <div>
-          <label class="flex items-center gap-2 text-xs text-blue-400 font-bold mb-1 cursor-pointer">
-            <input type="checkbox" class="folder-cb rounded bg-slate-800 border-slate-700 text-emerald-500" onchange="toggleFolder(this, '${folder}')">
-            <span>📁 ${folderName}</span>
-          </label>
-          <div class="pl-4 border-l border-slate-800 ml-1 space-y-1">
-            ${folderFiles.map(f => `
-              <label class="flex items-center gap-2 text-xs text-slate-300 cursor-pointer hover:text-white">
-                <input type="checkbox" data-folder="${folder}" class="staged-file-cb rounded bg-slate-800 border-slate-700 text-emerald-500" value="${f.path}">
-                <span class="truncate" title="${f.name}">${f.name}</span>
-              </label>
-            `).join("")}
-          </div>
-        </div>
-      `;
+      const group = document.createElement("div");
+      const folderLabel = document.createElement("label");
+      folderLabel.className = "flex items-center gap-2 text-xs text-blue-400 font-bold mb-1 cursor-pointer";
+      const folderCheckbox = document.createElement("input");
+      folderCheckbox.type = "checkbox";
+      folderCheckbox.className = "folder-cb rounded bg-slate-800 border-slate-700 text-emerald-500";
+      folderCheckbox.addEventListener("change", () => toggleFolder(folderCheckbox, folder));
+      const folderText = document.createElement("span");
+      folderText.textContent = `Folder: ${folderName}`;
+      folderLabel.append(folderCheckbox, folderText);
+
+      const filesContainer = document.createElement("div");
+      filesContainer.className = "pl-4 border-l border-slate-800 ml-1 space-y-1";
+      folderFiles.forEach(f => {
+        const fileLabel = document.createElement("label");
+        fileLabel.className = "flex items-center gap-2 text-xs text-slate-300 cursor-pointer hover:text-white";
+        const fileCheckbox = document.createElement("input");
+        fileCheckbox.type = "checkbox";
+        fileCheckbox.dataset.folder = folder;
+        fileCheckbox.className = "staged-file-cb rounded bg-slate-800 border-slate-700 text-emerald-500";
+        fileCheckbox.value = f.path;
+        const fileName = document.createElement("span");
+        fileName.className = "truncate";
+        fileName.title = f.name;
+        fileName.textContent = f.name;
+        fileLabel.append(fileCheckbox, fileName);
+        filesContainer.appendChild(fileLabel);
+      });
+      group.append(folderLabel, filesContainer);
+      list.appendChild(group);
     }
-    list.innerHTML = html;
   } catch (err) {
     console.error("Failed to load staging files:", err);
   }
@@ -138,7 +153,7 @@ async function ingestSelected(btn) {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({ paths })
-    });
+    }).then(ensureSuccess);
     await loadStaging();
     await loadQueue();
   } catch (err) {
@@ -155,7 +170,7 @@ async function toggleModel(modelName, checkboxElement) {
   const action = checkboxElement.checked ? 'load' : 'unload';
   checkboxElement.disabled = true;
   try {
-    await fetch(`/api/system/vram/${action}/${modelName}`, { method: 'POST' });
+    await fetch(`/api/system/vram/${action}/${modelName}`, { method: 'POST' }).then(ensureSuccess);
   } catch (error) {
     console.error("VRAM API Error:", error);
     checkboxElement.checked = !checkboxElement.checked; // Revert on failure
@@ -171,7 +186,7 @@ async function runOrchestrator(btn) {
   btn.classList.add("opacity-50", "cursor-not-allowed");
   
   try {
-    await fetch("/api/pipeline/run-orchestrator", { method: 'POST' });
+    await fetch("/api/pipeline/run-orchestrator", { method: 'POST' }).then(ensureSuccess);
     await loadQueue();
   } catch (error) {
     console.error("Orchestrator Error:", error);
@@ -187,12 +202,19 @@ async function approveAsset() {
   const assetId = document.getElementById("asset-id").innerText;
   if (assetId === "No Asset") return;
   try {
-    await fetch(`/api/assets/${assetId}/approve`, { method: "POST" });
-    document.getElementById("terminal").innerHTML += `<div>> [SYSTEM] Asset ${assetId} approved.</div>`;
+    await fetch(`/api/assets/${assetId}/approve`, { method: "POST" }).then(ensureSuccess);
+    const terminalLine = document.createElement("div");
+    terminalLine.textContent = `> [SYSTEM] Asset ${assetId} approved.`;
+    document.getElementById("terminal").appendChild(terminalLine);
     await loadQueue();
   } catch (err) {
     console.error("Approve error:", err);
   }
+}
+
+async function ensureSuccess(response) {
+  if (response.ok) return response;
+  throw new Error(await response.text());
 }
 
 // Initialize page data on load
