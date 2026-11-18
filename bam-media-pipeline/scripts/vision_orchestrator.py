@@ -121,8 +121,13 @@ def get_exif_data(filepath):
     return telemetry
 
 def call_ollama(model: str, prompt: str, image_path: str = None):
-    payload = {"model": model, "prompt": prompt, "stream": False, "keep_alive": -1, "format": "json"}
-    if image_path and os.path.exists(image_path):
+    from vision_client import call_free_model, validate_output
+    if os.getenv("BAM_VISION_BACKEND", "ollama") == "openrouter":
+        return call_free_model(prompt, image_path)
+    payload = {"model": model, "prompt": prompt, "stream": False, "keep_alive": "5m", "format": "json"}
+    if image_path:
+        if not os.path.isfile(image_path) or os.path.getsize(image_path)>10*1024*1024:
+            raise ValueError("Use an existing preview below 10 MiB")
         import base64
         with open(image_path, "rb") as img:
             payload["images"] = [base64.b64encode(img.read()).decode("utf-8")]
@@ -134,7 +139,7 @@ def call_ollama(model: str, prompt: str, image_path: str = None):
         if not isinstance(response, dict) or not response:
             raise ValueError(f"{model} returned an empty or invalid JSON object")
         logger.info("Ollama response accepted; model=%s fields=%s", model, sorted(response.keys()))
-        return response
+        return validate_output(response)
     except Exception as e:
         logger.exception("Ollama call failed; model=%s error=%s", model, e)
         raise

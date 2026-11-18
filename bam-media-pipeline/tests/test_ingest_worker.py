@@ -1,3 +1,4 @@
+import os
 import importlib.util
 import runpy
 from datetime import datetime
@@ -36,7 +37,8 @@ class IngestWorkerHelperTests(unittest.TestCase):
             with patch.object(sys.modules["psycopg2"], "connect", return_value=connection, create=True), patch(
                 "subprocess.run", return_value=types.SimpleNamespace(stdout="[]")
             ), patch.object(sys, "argv", [str(MODULE_PATH), str(root / "photo.jpg"), str(folder), str(root / "missing")]):
-                runpy.run_path(str(MODULE_PATH), run_name="__main__")
+                with patch.dict(os.environ, {"DATABASE_URL": "postgresql://test:test@localhost/test"}):
+                    runpy.run_path(str(MODULE_PATH), run_name="__main__")
         inserts = [call.args[1] for call in cursor.execute.call_args_list if "INSERT INTO assets" in call.args[0]]
         self.assertEqual([values[2] for values in inserts], ["photo.jpg", "clip.mov"])
         self.assertEqual([values[5] for values in inserts], ["still", "video"])

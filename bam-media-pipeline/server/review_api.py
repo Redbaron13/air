@@ -8,6 +8,7 @@ import os
 import subprocess
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from http import HTTPStatus
 from pathlib import Path
 from uuid import UUID
 
@@ -521,12 +522,21 @@ def decide(asset_id: str, d: Decision):
     new_state = {"approve": "APPROVED", "reject": "REJECTED", "rework": "INGESTED"}[d.action]
     now = datetime.now(timezone.utc).isoformat()
     with _conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT a.describes, a.alt, a.service_tags, a.final_output, a.media_kind, "
+        cur.execute("SELECT a.workflow_state, a.describes, a.alt, a.service_tags, a.final_output, a.media_kind, "
                     "(SELECT judge_output FROM ai_evaluations e WHERE e.asset_id = a.asset_id "
-                    " ORDER BY evaluated_at DESC LIMIT 1) AS judge FROM assets a WHERE asset_id = %s", (asset_id,))
+                    " ORDER BY evaluated_at DESC LIMIT 1) AS judge FROM assets a WHERE asset_id = %s FOR UPDATE", (asset_id,))
         prior = cur.fetchone()
         if not prior:
             raise HTTPException(status_code=NOT_FOUND, detail="Asset not found")
+        if prior["workflow_state"] != d.expected_state:
+            raise HTTPException(status_code=HTTPStatus.CONFLICT, detail="Asset changed; reload before deciding")
+        if d.action == "approve":
+            if prior["workflow_state"] != "PENDING_HUMAN":
+                raise HTTPException(status_code=HTTPStatus.CONFLICT, detail="Asset is not awaiting human review")
+            if not d.rights_confirmed or not d.metadata_confirmed:
+                raise HTTPException(status_code=422, detail="Confirm media rights and reviewed metadata")
+            if not (d.alt if d.alt is not None else prior["alt"] or "").strip():
+                raise HTTPException(status_code=422, detail="Reviewed alt text is required")
         before = prior.get("final_output") if isinstance(prior.get("final_output"), dict) else None
         edits = {k: v for k, v in (("describes", d.describes), ("alt", d.alt), ("service_tags", d.service_tags))
                  if v is not None}
@@ -569,14 +579,16 @@ def decide(asset_id: str, d: Decision):
             final["human"] = human
             cur.execute("UPDATE assets SET final_output = %s WHERE asset_id = %s",
                         (Json(final, dumps=_dumps), asset_id))
-        if edits or d.notes or changed:
-            diff = media_intel.diff_records(_strip_human(before), _strip_human(record)) if record is not None else []
-            cur.execute("INSERT INTO human_corrections (asset_id, prior_ai_output, human_approved_output, correction_notes) "
-                        "VALUES (%s, %s, %s, %s)",
-                        (asset_id, Json({"describes": prior["describes"], "alt": prior["alt"],
-                                         "service_tags": prior["service_tags"], "judge": prior["judge"]}, dumps=_dumps),
-                         Json({"action": d.action, **edits, **({"diff": diff} if diff else {})}, dumps=_dumps),
-                         d.notes or None))
+        diff = media_intel.diff_records(_strip_human(before), _strip_human(record)) if record is not None else []
+        cur.execute("INSERT INTO human_corrections (asset_id, prior_ai_output, human_approved_output, correction_notes) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (asset_id, Json({"describes": prior["describes"], "alt": prior["alt"],
+                                     "service_tags": prior["service_tags"], "judge": prior["judge"]}, dumps=_dumps),
+                     Json({"action": d.action, "reviewer": "operator", "at": now,
+                           "prior_state": prior["workflow_state"], "rights_confirmed": d.rights_confirmed,
+                           "metadata_confirmed": d.metadata_confirmed, **edits,
+                           **({"diff": diff} if diff else {})}, dumps=_dumps),
+                     d.notes or None))
         example = None
         if d.action == "rework" and d.reprocess_feedback:
             example = _record_example(conn, asset_id, "rework", before, before, d.reprocess_feedback, d.notes or None)

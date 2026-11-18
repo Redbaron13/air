@@ -1,0 +1,8 @@
+FROM python:3.12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends libimage-exiftool-perl \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir 'Pillow>=11,<13'
+WORKDIR /app
+COPY scripts/local_review.py scripts/vision_client.py scripts/collection_match.py scripts/vision_benchmark.py /app/
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+ENTRYPOINT ["python", "/app/local_review.py"]

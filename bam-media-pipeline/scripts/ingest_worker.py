@@ -14,7 +14,7 @@ for _p in (os.path.dirname(_SCRIPTS_DIR), _SCRIPTS_DIR):
 
 from server import exif_meta  # noqa: E402
 
-DB_DSN = os.environ["DATABASE_URL"]
+DB_DSN = os.getenv("DATABASE_URL")
 
 MEDIA_EXT = {
     ".jpg", ".jpeg", ".png", ".webp", ".avif", ".tif", ".tiff", ".heic", ".dng",
@@ -22,7 +22,9 @@ MEDIA_EXT = {
 }
 
 def get_db():
-    return psycopg2.connect(DB_DSN, cursor_factory=RealDictCursor)
+    if not DB_DSN:
+        raise RuntimeError("DATABASE_URL is required for ingestion")
+    return psycopg2.connect(DB_DSN, cursor_factory=RealDictCursor, connect_timeout=10)
 
 SUPPORTED_EXTENSIONS = tuple(sorted(MEDIA_EXT))
 

@@ -23,12 +23,22 @@ jobs:
         run: |
           bash -n setup.sh
           find bam-media-pipeline/scripts -type f -name '*.sh' -exec bash -n {} \;
+      - name: Prepare disposable Compose credentials
+        run: |
+          python - <<'PY'
+          import os, secrets
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              env.write("PIPELINE_OPERATOR_TOKEN=" + secrets.token_hex(32) + "\n")
+          PY
       - name: Docker Compose config
         run: |
           cd bam-media-pipeline
           cp env.example .env
-          docker compose -f docker-compose.nas.yml config --quiet
+          docker compose -f docker-compose.nas.yml --profile derivatives config --quiet
+          BAM_EXT4_ROOT=/tmp/bam-ci docker compose -f deploy/vision/compose.local-review.yml --profile worker config --quiet
+          docker compose -f deploy/vision/compose.nas-8gb.yml config --quiet
       - name: Build pipeline images
         run: |
           cd bam-media-pipeline
-          docker compose -f docker-compose.nas.yml build
+          docker compose -f docker-compose.nas.yml --profile derivatives build
+          BAM_EXT4_ROOT=/tmp/bam-ci docker compose -f deploy/vision/compose.local-review.yml --profile worker build review

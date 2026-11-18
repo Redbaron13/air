@@ -71,7 +71,7 @@ def probe_duration(src: Path, ffmpeg: str) -> float:
 
 def make_preview_still(ffmpeg: str, src: Path, dest: Path, max_edge: int) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    vf = f"scale='min({max_edge},iw)':-2"
+    vf = f"scale={max_edge}:{max_edge}:force_original_aspect_ratio=decrease:force_divisible_by=2"
     result = subprocess.run(
         [ffmpeg, "-y", "-i", str(src), "-vf", vf, "-q:v", "3", str(dest)],
         capture_output=True,
@@ -93,7 +93,7 @@ def make_video_keyframes(
         cmd = [
             ffmpeg, "-y", "-ss", f"{t:.2f}", "-i", str(src),
             "-vframes", "1",
-            "-vf", f"scale='min({max_edge},iw)':-2",
+            "-vf", f"scale={max_edge}:{max_edge}:force_original_aspect_ratio=decrease:force_divisible_by=2",
             str(dest),
         ]
         subprocess.run(cmd, capture_output=True, text=True)
@@ -113,6 +113,12 @@ def main(argv: List[str] | None = None) -> int:
 
     source = Path(args.source).expanduser().resolve()
     out = Path(args.out).expanduser().resolve()
+    if not source.is_dir():
+        raise SystemExit("Source directory does not exist")
+    if out == source or out.is_relative_to(source):
+        raise SystemExit("Output must be outside source to prevent recursive ingestion")
+    if args.max_edge < 2 or args.max_edge > 8192:
+        raise SystemExit("max-edge must be between 2 and 8192")
     preview = out / "preview"
     preview.mkdir(parents=True, exist_ok=True)
     ffmpeg = require_ffmpeg()
@@ -190,3 +196,4 @@ def main(argv: List[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

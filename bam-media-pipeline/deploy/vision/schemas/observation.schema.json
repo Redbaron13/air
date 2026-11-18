@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "scene": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600
+    },
+    "subjects": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600
+    },
+    "activities": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600
+    },
+    "visible_condition": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600
+    },
+    "image_quality": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600
+    }
+  },
+  "required": [
+    "scene",
+    "subjects",
+    "activities",
+    "visible_condition",
+    "image_quality"
+  ],
+  "additionalProperties": false
+}

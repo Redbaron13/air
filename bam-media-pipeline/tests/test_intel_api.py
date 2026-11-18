@@ -177,7 +177,7 @@ def _record():
 def _decision_handler(rec):
     def handler(sql, params):
         if "FROM assets a WHERE asset_id" in sql:
-            return [{"describes": "old", "alt": "old alt", "service_tags": [], "final_output": rec,
+            return [{"workflow_state": "PENDING_HUMAN", "describes": "old", "alt": "old alt", "service_tags": [], "final_output": rec,
                      "media_kind": "still", "judge": None}]
         return []
     return handler
@@ -192,7 +192,8 @@ def test_decision_edit_keeps_identifier_and_records_example(client, monkeypatch)
     edited["identifier_components"] = {"prefix": "X"}
     edited["content"]["description"] = "A human rewritten description."
     r = client.post("/api/review/assets/a1/decision",
-                    json={"action": "approve", "final_output": edited, "notes": "n1", "feedback": "good fix",
+                    json={"action": "approve", "expected_state": "PENDING_HUMAN", "rights_confirmed": True,
+                          "metadata_confirmed": True, "final_output": edited, "notes": "n1", "feedback": "good fix",
                           "training_candidate": True})
     assert r.is_success, r.text
     assert r.json()["state"] == "APPROVED"
@@ -218,7 +219,9 @@ def test_decision_invalid_record_rejected(client, monkeypatch):
     use_db(monkeypatch, _decision_handler(rec))
     bad = copy.deepcopy(rec)
     del bad["shoot"]
-    r = client.post("/api/review/assets/a1/decision", json={"action": "approve", "final_output": bad})
+    r = client.post("/api/review/assets/a1/decision",
+                    json={"action": "approve", "expected_state": "PENDING_HUMAN", "rights_confirmed": True,
+                          "metadata_confirmed": True, "final_output": bad})
     assert r.status_code == 422
 
 
@@ -227,7 +230,8 @@ def test_decision_flag_without_changes(client, monkeypatch):
     rec = _record()
     use_db(monkeypatch, _decision_handler(rec))
     r = client.post("/api/review/assets/a1/decision",
-                    json={"action": "approve", "final_output": rec, "training_candidate": True})
+                    json={"action": "approve", "expected_state": "PENDING_HUMAN", "rights_confirmed": True,
+                          "metadata_confirmed": True, "final_output": rec, "training_candidate": True})
     assert r.is_success, r.text
     assert [e["source"] for e in fin.examples] == ["flag"]
 
@@ -235,7 +239,9 @@ def test_decision_flag_without_changes(client, monkeypatch):
 def test_decision_rework_with_feedback(client, monkeypatch):
     fin = fake_finalize(monkeypatch)
     db = use_db(monkeypatch, _decision_handler(_record()))
-    r = client.post("/api/review/assets/a1/decision", json={"action": "rework", "reprocess_feedback": "look closer"})
+    r = client.post("/api/review/assets/a1/decision",
+                    json={"action": "rework", "expected_state": "PENDING_HUMAN",
+                          "reprocess_feedback": "look closer"})
     assert r.is_success and r.json()["state"] == "INGESTED"
     rw = db.matching("rework_feedback")
     assert rw and rw[int()][1][int()] == "look closer"
@@ -244,7 +250,8 @@ def test_decision_rework_with_feedback(client, monkeypatch):
 
 def test_decision_unknown_asset(client, monkeypatch):
     use_db(monkeypatch)
-    assert client.post("/api/review/assets/zz/decision", json={"action": "reject"}).status_code == NF
+    assert client.post("/api/review/assets/zz/decision",
+                       json={"action": "reject", "expected_state": "PENDING_HUMAN"}).status_code == NF
 
 
 # ------------------------------------------------------------ split/reassign
