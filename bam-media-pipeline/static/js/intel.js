@@ -274,10 +274,14 @@ selectAsset = async function (id) {
   const reprocess = h("textarea", { class: ta, rows: 2, "aria-label": "Reprocess feedback", placeholder: "Reprocess feedback: what should the models do differently?" });
   const train = h("input", { type: "checkbox", id: "chk-train" }); train.checked = !!d.training_candidate;
   const editor = h("div", { class: "hidden mt-2 bg-slate-950 border border-slate-800 rounded p-2" });
-  let editedFo = null;
 
   const decide = async (action, extra = {}) => {
-    const body = { action, notes: notes.value, feedback: feedback.value, training_candidate: train.checked, ...extra };
+    const body = { action, expected_state: a.workflow_state, notes: notes.value, feedback: feedback.value, training_candidate: train.checked, ...extra };
+    if (action === "approve") {
+      if (!confirm("I have reviewed this media, confirmed publication rights, and checked its metadata and alt text.")) return;
+      body.rights_confirmed = true;
+      body.metadata_confirmed = true;
+    }
     if (action === "rework" && !body.reprocess_feedback) body.reprocess_feedback = reprocess.value;
     try { await post(`/assets/${encodeURIComponent(id)}/decision`, body); }
     catch (e) { alert(`Decision failed: ${e.message}`); return; }
@@ -310,6 +314,30 @@ selectAsset = async function (id) {
       h("ul", { class: "text-xs text-slate-400 list-disc ml-4" }, arr(d.feedback).map((f) => h("li", {}, typeof f === "string" ? f : f.text || f.feedback || JSON.stringify(f))))) : null));
 
   function buildEditor() {
+    if (!fo || typeof fo !== "object" || Array.isArray(fo) || !Object.keys(fo).length) {
+      const desc = h("textarea", { class: ta, rows: 3 });
+      const alt = h("input", { class: ta });
+      const tags = h("input", { class: ta });
+      desc.value = a.describes || "";
+      alt.value = a.alt || "";
+      tags.value = arr(a.service_tags).join(", ");
+      editor.append(
+        h("div", { class: "text-xs mb-1" }, "No standardized record is available. You can edit the description, alt text and service tags."),
+        h("label", { class: "block text-xs" }, "Description", desc),
+        h("label", { class: "block text-xs" }, "Alt text", alt),
+        h("label", { class: "block text-xs" }, "Service tags (comma separated)", tags),
+        h("button", { type: "button", class: bPrimary, onclick: () => {
+          const extra = {};
+          if (desc.value !== (a.describes || "")) extra.describes = desc.value;
+          if (alt.value !== (a.alt || "")) extra.alt = alt.value;
+          if (tags.value !== arr(a.service_tags).join(", ")) {
+            extra.service_tags = tags.value.split(",").map((t) => t.trim()).filter(Boolean);
+          }
+          decide("approve", extra);
+        } }, "Save edits & approve"));
+      return;
+    }
+
     const base = JSON.parse(JSON.stringify(fo));
     base.content = base.content || {}; base.classification = base.classification || {}; base.view = base.view || {}; base.photogrammetry = base.photogrammetry || {};
     if (!base.content.description && a.describes) base.content.description = a.describes;
@@ -346,7 +374,6 @@ selectAsset = async function (id) {
     const save = h("button", { type: "button", class: bPrimary }, "Save edits & approve");
     save.addEventListener("click", () => {
       const o = parse(); if (!o || typeof o !== "object" || Array.isArray(o)) { err.textContent = err.textContent || "Final output must be a JSON object."; return; }
-      editedFo = o;
       const extra = { final_output: o };
       const c = o.content || {};
       if (c.description !== undefined && c.description !== (a.describes || "")) extra.describes = c.description;

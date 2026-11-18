@@ -471,6 +471,9 @@ def validation():
 
 class Decision(BaseModel):
     action: str = Field(pattern="^(approve|reject|rework)$")
+    expected_state: str = Field(min_length=1, max_length=32, description="Workflow state shown when review began.")
+    rights_confirmed: bool = Field(default=False, description="Reviewer confirmed publication rights; required for approval.")
+    metadata_confirmed: bool = Field(default=False, description="Reviewer checked metadata and alt text; required for approval.")
     notes: str = Field(default="", max_length=TEXT_MAX)
     describes: str | None = Field(default=None, max_length=TEXT_MAX)
     alt: str | None = Field(default=None, max_length=TEXT_MAX // 4)
@@ -535,9 +538,8 @@ def decide(asset_id: str, d: Decision):
                 raise HTTPException(status_code=HTTPStatus.CONFLICT, detail="Asset is not awaiting human review")
             if not d.rights_confirmed or not d.metadata_confirmed:
                 raise HTTPException(status_code=422, detail="Confirm media rights and reviewed metadata")
-            if not (d.alt if d.alt is not None else prior["alt"] or "").strip():
-                raise HTTPException(status_code=422, detail="Reviewed alt text is required")
-        before = prior.get("final_output") if isinstance(prior.get("final_output"), dict) else None
+        stored_output = prior.get("final_output")
+        before = stored_output if isinstance(stored_output, dict) and stored_output else None
         edits = {k: v for k, v in (("describes", d.describes), ("alt", d.alt), ("service_tags", d.service_tags))
                  if v is not None}
         record = None
@@ -552,13 +554,17 @@ def decide(asset_id: str, d: Decision):
             changed = bool(media_intel.diff_records(_strip_human(before), _strip_human(record)))
             c = record["content"]
             edits = {"describes": c.get("description"), "alt": c.get("alt_text"), "service_tags": c.get("tags")}
-            d.describes, d.alt, d.service_tags = edits["describes"], edits["alt"], edits["service_tags"]
         elif d.action == "approve" and edits:
             changed = True
-        if d.action == "approve" and edits:
-            cur.execute("UPDATE assets SET describes = COALESCE(%s, describes), alt = COALESCE(%s, alt), "
-                        "service_tags = COALESCE(%s, service_tags) WHERE asset_id = %s",
-                        (d.describes, d.alt, Json(d.service_tags) if d.service_tags is not None else None, asset_id))
+        if d.action == "approve":
+            alt = edits.get("alt")
+            if not (alt if alt is not None else prior["alt"] or "").strip():
+                raise HTTPException(status_code=422, detail="Reviewed alt text is required")
+            if edits:
+                tags = edits.get("service_tags")
+                cur.execute("UPDATE assets SET describes = COALESCE(%s, describes), alt = COALESCE(%s, alt), "
+                            "service_tags = COALESCE(%s, service_tags) WHERE asset_id = %s",
+                            (edits.get("describes"), alt, Json(tags) if tags is not None else None, asset_id))
         cur.execute("UPDATE assets SET workflow_state = %s WHERE asset_id = %s", (new_state, asset_id))
         cur.execute("UPDATE assets SET notes = COALESCE(NULLIF(%s, ''), notes), "
                     "feedback = COALESCE(NULLIF(%s, ''), feedback), training_candidate = %s WHERE asset_id = %s",

@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import types
+from http import HTTPStatus
 from pathlib import Path
 
 import pytest
@@ -98,6 +99,7 @@ def use_db(monkeypatch, handler=None):
 
 def fake_finalize(monkeypatch):
     mod = types.ModuleType("server.finalize")
+    mod.ELIGIBLE_STATES = ("PENDING_HUMAN", "INGESTED")
     mod.examples = []
     mod.record_training_example = lambda conn, asset_id, source, before, after, feedback=None, notes=None: (
         mod.examples.append({"asset_id": asset_id, "source": source, "before": before, "after": after,
@@ -174,13 +176,66 @@ def _record():
     return rec
 
 
-def _decision_handler(rec):
+def _decision_handler(rec, *, state="PENDING_HUMAN", alt="old alt"):
     def handler(sql, params):
         if "FROM assets a WHERE asset_id" in sql:
-            return [{"workflow_state": "PENDING_HUMAN", "describes": "old", "alt": "old alt", "service_tags": [], "final_output": rec,
+            return [{"workflow_state": state, "describes": "old", "alt": alt, "service_tags": [], "final_output": rec,
                      "media_kind": "still", "judge": None}]
         return []
     return handler
+
+
+@pytest.mark.parametrize(("payload", "state", "status"), [
+    ({}, "PENDING_HUMAN", 422),
+    ({"expected_state": "X" * 33}, "PENDING_HUMAN", 422),
+    ({"expected_state": "REJECTED"}, "PENDING_HUMAN", HTTPStatus.CONFLICT),
+    ({"expected_state": "APPROVED", "rights_confirmed": True, "metadata_confirmed": True}, "APPROVED", HTTPStatus.CONFLICT),
+    ({"expected_state": "PENDING_HUMAN", "rights_confirmed": True}, "PENDING_HUMAN", 422),
+    ({"expected_state": "PENDING_HUMAN", "metadata_confirmed": True}, "PENDING_HUMAN", 422),
+])
+def test_decision_rejects_missing_stale_or_unconfirmed_approval(client, monkeypatch, payload, state, status):
+    db = use_db(monkeypatch, _decision_handler(None, state=state))
+    r = client.post("/api/review/assets/a1/decision", json={"action": "approve", **payload})
+    assert r.status_code == status
+    assert not db.matching("UPDATE assets")
+    assert not db.commits
+
+
+@pytest.mark.parametrize(("record", "confirmation"), [(None, True), ({}, "true")])
+def test_decision_legacy_text_edits(client, monkeypatch, record, confirmation):
+    fake_finalize(monkeypatch)
+    db = use_db(monkeypatch, _decision_handler(record, alt=None))
+    r = client.post("/api/review/assets/a1/decision",
+                    json={"action": "approve", "expected_state": "PENDING_HUMAN", "rights_confirmed": confirmation,
+                          "metadata_confirmed": confirmation, "describes": "New description", "alt": "New alt",
+                          "service_tags": ["survey"]})
+    assert r.is_success and r.json()["state"] == "APPROVED"
+    [(_, (describes, alt, tags, _))] = db.matching("UPDATE assets SET describes")
+    assert (describes, alt, _adapted(tags)) == ("New description", "New alt", ["survey"])
+    assert not db.matching("SET final_output")
+    [(_, (_, _, correction, _))] = db.matching("INSERT INTO human_corrections")
+    assert _adapted(correction)["rights_confirmed"] is True
+    assert _adapted(correction)["metadata_confirmed"] is True
+    assert db.commits == 1
+
+
+@pytest.mark.parametrize(("prior_alt", "record_alt", "allowed"), [(None, "New alt", True), ("Old alt", "  ", False)])
+def test_decision_checks_alt_from_edited_record(client, monkeypatch, prior_alt, record_alt, allowed):
+    fake_finalize(monkeypatch)
+    record = _record()
+    db = use_db(monkeypatch, _decision_handler(record, alt=prior_alt))
+    edited = copy.deepcopy(record)
+    edited["content"]["alt_text"] = record_alt
+    r = client.post("/api/review/assets/a1/decision",
+                    json={"action": "approve", "expected_state": "PENDING_HUMAN", "rights_confirmed": True,
+                          "metadata_confirmed": True, "final_output": edited})
+    if allowed:
+        assert r.is_success, r.text
+        assert db.commits == 1
+    else:
+        assert r.status_code == 422 and r.json()["detail"] == "Reviewed alt text is required"
+        assert not db.matching("UPDATE assets")
+        assert not db.commits
 
 
 def test_decision_edit_keeps_identifier_and_records_example(client, monkeypatch):
@@ -287,8 +342,14 @@ def test_reassign(client, monkeypatch):
 
 
 def test_batch_finalize_and_refresh(client, monkeypatch):
-    fake_finalize(monkeypatch)
-    use_db(monkeypatch, lambda sql, p: [{"asset_id": "q1"}, {"asset_id": "q2"}] if "APPROVED" in sql else [])
+    fin = fake_finalize(monkeypatch)
+
+    def handler(sql, params):
+        assert "workflow_state IN %s" in sql and params == (fin.ELIGIBLE_STATES,)
+        assert "identifier_locked IS NOT TRUE" in sql and "jsonb_typeof(final_output) = 'object'" in sql
+        return [{"asset_id": "q1"}, {"asset_id": "q2"}]
+
+    use_db(monkeypatch, handler)
     r = client.post("/api/review/intel/batch/finalize", json={"asset_ids": ["x"]})
     assert r.is_success and r.json()["requested"] == 1 and r.json()["updated"] == 7
     assert client.post("/api/review/intel/batch/finalize", json={}).json()["requested"] == 2
