@@ -2,11 +2,20 @@ import os
 import hashlib
 import json
 import subprocess
+import logging
 from datetime import datetime
+from pathlib import Path
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)sZ %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("bam.ingest")
+
 DB_DSN = os.getenv("DATABASE_URL")
+ACTIVE_DIR = Path(os.getenv("ACTIVE_DIR", "/storage/active")).resolve()
 
 MEDIA_EXT = {
     ".jpg", ".jpeg", ".png", ".webp", ".avif", ".tif", ".tiff", ".heic", ".dng",
@@ -42,11 +51,14 @@ def build_asset_identifiers(file_hash: str, batch_id: str = "A01", now: datetime
     return unique_stem, asset_id
 
 def compute_sha256(filepath: str) -> str:
+    logger.info("Computing SHA-256; path=%s", filepath)
     hasher = hashlib.sha256()
     with open(filepath, "rb") as f:
         while chunk := f.read(65536):
             hasher.update(chunk)
-    return hasher.hexdigest()
+    digest = hasher.hexdigest()
+    logger.info("SHA-256 complete; path=%s sha256=%s", filepath, digest)
+    return digest
 
 def extract_exif(filepath: str) -> dict:
     cmd = ["exiftool", "-j", "-n", "-DateTimeOriginal", "-GPSLatitude", "-GPSLongitude", "-GPSAltitude", "-Model", "-FocalLength", "-GimbalPitchDegree", filepath]
@@ -62,7 +74,10 @@ def extract_exif(filepath: str) -> dict:
             "focal_length": data.get("FocalLength", "Unknown"),
             "gimbal_pitch": float(data["GimbalPitchDegree"]) if data.get("GimbalPitchDegree") is not None else None,
         }
-    except Exception:
+        logger.info("EXIF extraction complete; path=%s sensor=%s", filepath, metadata["sensor"])
+        return metadata
+    except Exception as exc:
+        logger.warning("EXIF extraction failed; path=%s error=%s", filepath, exc)
         return {}
 
 def kind_for(filepath: str) -> str:
@@ -74,13 +89,23 @@ def kind_for(filepath: str) -> str:
     return "still"
 
 def ingest_file(filepath: str, batch_id="A01"):
+    logger.info("Ingest started; requested_path=%s batch_id=%s", filepath, batch_id)
+    requested_path = Path(filepath)
+    if requested_path.is_symlink():
+        raise ValueError("Symbolic links cannot be ingested")
+    resolved_path = requested_path.resolve(strict=True)
+    if not resolved_path.is_file() or not resolved_path.is_relative_to(ACTIVE_DIR):
+        raise ValueError("Files must be regular files inside the staging directory")
+
+    filepath = str(resolved_path)
+    logger.info("Validated staged file; path=%s", filepath)
     file_hash = compute_sha256(filepath)
 
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT asset_id FROM assets WHERE original_sha256 = %s", (file_hash,))
             if cur.fetchone():
-                print(f"[DEDUP] Duplicate discarded: {filepath}")
+                logger.info("Duplicate discarded; path=%s sha256=%s", filepath, file_hash)
                 return None
 
             meta = extract_exif(filepath)
@@ -100,7 +125,7 @@ def ingest_file(filepath: str, batch_id="A01"):
                 meta.get("lat"), meta.get("lon"), meta.get("alt")
             ))
             conn.commit()
-            print(f"[INGESTED] Asset staged: {asset_id}")
+            logger.info("Asset ingested; asset_id=%s path=%s", asset_id, filepath)
             return asset_id
 
 if __name__ == "__main__":
@@ -113,4 +138,3 @@ if __name__ == "__main__":
             print(f"[SKIP] No supported media files found for: {path}")
         for target in targets:
             ingest_file(target)
-

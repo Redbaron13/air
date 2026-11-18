@@ -304,6 +304,12 @@ async function loadValidation() {
 }
 
 startEvents();
-loadPipeline();
+const requestedAsset = new URLSearchParams(location.search).get("asset_id");
+if (requestedAsset) {
+  showTab("review");
+  $("f-state").value = "";
+  loadAssets().then(() => selectAsset(requestedAsset));
+} else {
+  loadPipeline();
+}
 setInterval(() => { if (currentTab === "pipeline") loadPipeline(); }, 15000);
-

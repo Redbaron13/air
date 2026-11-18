@@ -38,7 +38,8 @@ class IngestWorkerHelperTests(unittest.TestCase):
                 "subprocess.run", return_value=types.SimpleNamespace(stdout="[]")
             ), patch.object(sys, "argv", [str(MODULE_PATH), str(root / "photo.jpg"), str(folder), str(root / "missing")]):
                 with patch.dict(os.environ, {"DATABASE_URL": "postgresql://test:test@localhost/test"}):
-                    runpy.run_path(str(MODULE_PATH), run_name="__main__")
+                    with patch.dict(os.environ, {"ACTIVE_DIR": str(root.resolve())}):
+                        runpy.run_path(str(MODULE_PATH), run_name="__main__")
         inserts = [call.args[1] for call in cursor.execute.call_args_list if "INSERT INTO assets" in call.args[0]]
         self.assertEqual([values[2] for values in inserts], ["photo.jpg", "clip.mov"])
         self.assertEqual([values[5] for values in inserts], ["still", "video"])
@@ -52,7 +53,12 @@ class IngestWorkerHelperTests(unittest.TestCase):
                 with patch.object(ingest_worker, "get_db", return_value=connection), patch.object(
                     ingest_worker, "compute_sha256", return_value="abcdef1234567890"
                 ), patch.object(ingest_worker, "extract_exif", return_value={}):
-                    asset_id = ingest_worker.ingest_file(filename)
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        root = Path(tmpdir).resolve()
+                        filepath = root / filename
+                        filepath.write_bytes(b"sample")
+                        with patch.object(ingest_worker, "ACTIVE_DIR", root):
+                            asset_id = ingest_worker.ingest_file(str(filepath))
                 values = cursor.execute.call_args.args[1]
                 self.assertTrue(asset_id.endswith("-ABCDEF12"))
                 self.assertEqual(values[1], "ABCDEF12")
@@ -99,4 +105,3 @@ class IngestWorkerHelperTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

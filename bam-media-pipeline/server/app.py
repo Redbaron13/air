@@ -3,6 +3,7 @@ import json
 import asyncio
 import logging
 from datetime import datetime, timezone
+from http import HTTPStatus
 from pathlib import Path
 import httpx
 import psycopg2
@@ -20,6 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger("bam.api")
 
 from server.access import OperatorGate
+from server import review_api
 
 app = FastAPI()
 app.add_middleware(OperatorGate)
@@ -46,6 +48,25 @@ manager = []
 class IngestRequest(BaseModel):
     paths: list[str] = Field(min_length=1, max_length=100)
 
+ORCHESTRATOR_TIMEOUT_SECONDS = max(
+    1, int(os.getenv("ORCHESTRATOR_TIMEOUT_SECONDS", str(INGEST_TIMEOUT_SECONDS * 3)))
+)
+
+
+def has_cloud_backend() -> bool:
+    backend = os.getenv("BAM_VISION_BACKEND", "ollama").strip().lower()
+    azure = bool(
+        os.getenv("AZURE_OPENAI_ENDPOINT")
+        and (os.getenv("AZURE_OPENAI_API_KEY") or os.getenv("AZURE_OPENAI_KEY"))
+    )
+    return bool(
+        (backend == "azure" and azure)
+        or (backend == "openai" and bool(os.getenv("OPENAI_API_KEY")))
+        or (backend == "anthropic" and bool(os.getenv("ANTHROPIC_API_KEY")))
+        or (backend == "cloud" and (azure or os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY")))
+    )
+
+
 def validated_staged_file(raw_path: str) -> str:
     requested_path = Path(raw_path)
     if requested_path.is_symlink():
@@ -57,25 +78,6 @@ def validated_staged_file(raw_path: str) -> str:
     if not resolved_path.is_file() or not resolved_path.is_relative_to(ACTIVE_DIR):
         raise HTTPException(status_code=400, detail="Files must be regular files inside the staging directory")
     return str(resolved_path)
-
-
-def has_cloud_backend() -> bool:
-    backend = os.getenv("BAM_VISION_BACKEND", "auto").strip().lower()
-    if backend in {"ollama", "openrouter"}:
-        return False
-    if backend in {"azure", "openai", "anthropic", "cloud"}:
-        return True
-    return bool(
-        (os.getenv("AZURE_OPENAI_ENDPOINT") and (os.getenv("AZURE_OPENAI_API_KEY") or os.getenv("AZURE_OPENAI_KEY")))
-        or os.getenv("OPENAI_API_KEY")
-        or os.getenv("ANTHROPIC_API_KEY")
-    )
-
-
-def orchestrator_script() -> str:
-    if has_cloud_backend():
-        return "/app/scripts/cloud_fallback_worker.py"
-    return "/app/scripts/vision_orchestrator.py"
 
 async def log_to_gui(message: str):
     """Publishes log messages to Redis so they stream to the GUI terminal via WebSockets."""
@@ -202,8 +204,18 @@ def get_pending():
 
 @app.post("/api/assets/{asset_id}/approve")
 def approve_asset(asset_id: str):
-    raise HTTPException(status_code=409, detail="Use the review decision endpoint with rights and metadata confirmation")
-
+    """Approves an asset, moving it forward in the pipeline."""
+    raise HTTPException(
+        status_code=HTTPStatus.CONFLICT,
+        detail="Use the validated review decision endpoint to approve assets",
+    )
+    with psycopg2.connect(DB_DSN) as conn, conn.cursor() as cur:
+        cur.execute("UPDATE assets SET workflow_state = 'APPROVED' WHERE asset_id = %s", (asset_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Asset not found")
+        conn.commit()
+    logger.info("Asset approved by dashboard; asset_id=%s", asset_id)
+    return {"status": "success"}
 
 @app.post("/api/system/vram/{action}/{model_name}")
 async def manage_vram(action: str, model_name: str):
@@ -223,50 +235,115 @@ async def manage_vram(action: str, model_name: str):
             await log_to_gui(f"[ERROR] {str(e)}")
             return {"error": str(e)}
 
-async def _run_script(script_path: str, label: str):
-    # Keep requests bounded and kill the child on timeout, disconnect/cancellation or read failure.
+@app.post("/api/pipeline/run-orchestrator")
+async def run_orchestrator():
+    """Triggers the multi-phase AI evaluation pipeline."""
+    return await _run_orchestrator()
+    await log_to_gui("[SYSTEM] Starting Vision Orchestrator batch...")
+    logger.info("Vision orchestrator requested")
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "python", "-u", "/app/scripts/vision_orchestrator.py",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT
+        )
+        try:
+            async with asyncio.timeout(INGEST_TIMEOUT_SECONDS):
+                while True:
+                    line = await process.stdout.readline()
+                    if not line:
+                        break
+                    text = line.decode(errors="replace").strip()
+                    if text:
+                        await log_to_gui(text)
+                return_code = await process.wait()
+        except TimeoutError:
+            process.kill()
+            await process.wait()
+            raise RuntimeError(f"orchestrator timed out after {INGEST_TIMEOUT_SECONDS} seconds")
+        if return_code != 0:
+            raise RuntimeError(f"orchestrator exited with code {return_code}")
+        logger.info("Vision orchestrator completed successfully")
+        await log_to_gui("[SYSTEM] Orchestrator batch complete.")
+        return {"status": "success"}
+    except Exception as e:
+        logger.exception("Vision orchestrator failed")
+        await log_to_gui(f"[ERROR] Orchestrator failed: {str(e)}")
+        return {"error": str(e)}
+
+
+async def _run_orchestrator(force_cloud=False):
+    await log_to_gui("[SYSTEM] Starting Vision Orchestrator batch...")
+    backend = os.getenv("BAM_VISION_BACKEND", "ollama").strip().lower()
+    if force_cloud or backend in {"azure", "openai", "anthropic", "cloud"}:
+        script = "/app/scripts/cloud_fallback_worker.py"
+    elif backend in {"ollama", "openrouter"}:
+        script = "/app/scripts/vision_orchestrator.py"
+    else:
+        raise HTTPException(
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+            detail=f"Unsupported vision backend: {backend}",
+        )
+
     process = None
     try:
         process = await asyncio.create_subprocess_exec(
-            "python", "-u", script_path,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-        async with asyncio.timeout(900):
-            while line := await process.stdout.readline():
-                await log_to_gui(line.decode(errors="replace").strip())
-            await process.wait()
-        if process.returncode != 0:
-            raise HTTPException(status_code=502, detail=f"{label} failed")
-        return {"status": "success", "code": process.returncode}
+            "python", "-u", script,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        async with asyncio.timeout(ORCHESTRATOR_TIMEOUT_SECONDS):
+            while True:
+                line = await process.stdout.readline()
+                if not line:
+                    break
+                text = line.decode(errors="replace").strip()
+                if text:
+                    await log_to_gui(text)
+            return_code = await process.wait()
+        if return_code != os.EX_OK:
+            raise HTTPException(
+                status_code=HTTPStatus.BAD_GATEWAY,
+                detail=f"Orchestrator exited with code {return_code}",
+            )
+        logger.info("Vision orchestrator completed successfully; backend=%s", backend)
+        await log_to_gui("[SYSTEM] Orchestrator batch complete.")
+        return {"status": "success"}
     except TimeoutError as exc:
-        raise HTTPException(status_code=504, detail="Worker exceeded its 15-minute limit") from exc
+        logger.exception("Vision orchestrator timed out")
+        await log_to_gui("[ERROR] Orchestrator timed out")
+        raise HTTPException(
+            status_code=HTTPStatus.GATEWAY_TIMEOUT,
+            detail=f"Orchestrator timed out after {ORCHESTRATOR_TIMEOUT_SECONDS} seconds",
+        ) from exc
+    except HTTPException:
+        raise
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception("Vision orchestrator failed")
+        await log_to_gui(f"[ERROR] Orchestrator failed: {exc}")
+        raise HTTPException(
+            status_code=HTTPStatus.BAD_GATEWAY,
+            detail=f"Orchestrator failed: {exc}",
+        ) from exc
     finally:
         if process is not None and process.returncode is None:
-            process.kill()
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
             await process.wait()
-
-
-@app.post("/api/pipeline/run-orchestrator")
-async def run_orchestrator():
-    """Cloud worker when keys exist; otherwise local Ollama triple-pass."""
-    return await _run_script(orchestrator_script(), "Vision Orchestrator")
 
 
 @app.post("/api/pipeline/run-cloud")
 async def run_cloud():
-    """Force the cloud fallback worker."""
-    return await _run_script("/app/scripts/cloud_fallback_worker.py", "Cloud fallback worker")
+    return await _run_orchestrator(force_cloud=True)
 
 
-@app.get("/api/pipeline/backend")
-def pipeline_backend():
-    return {
-        "cloud": has_cloud_backend(),
-        "script": orchestrator_script(),
-        "forced": os.getenv("BAM_VISION_BACKEND", "auto"),
-    }
-
-from server.review_api import router as review_router  # noqa: E402
-app.include_router(review_router)
-
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
-
+app.include_router(review_api.router)
+app.mount(
+    "/",
+    StaticFiles(directory=str(Path(__file__).resolve().parent.parent / "static"), html=True),
+    name="static",
+)

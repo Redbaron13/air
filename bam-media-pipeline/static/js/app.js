@@ -201,15 +201,7 @@ async function runOrchestrator(btn) {
 async function approveAsset() {
   const assetId = document.getElementById("asset-id").innerText;
   if (assetId === "No Asset") return;
-  try {
-    await fetch(`/api/assets/${assetId}/approve`, { method: "POST" }).then(ensureSuccess);
-    const terminalLine = document.createElement("div");
-    terminalLine.textContent = `> [SYSTEM] Asset ${assetId} approved.`;
-    document.getElementById("terminal").appendChild(terminalLine);
-    await loadQueue();
-  } catch (err) {
-    console.error("Approve error:", err);
-  }
+  window.location.href = `/review.html?asset_id=${encodeURIComponent(assetId)}`;
 }
 
 async function ensureSuccess(response) {
