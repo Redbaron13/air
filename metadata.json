@@ -1,0 +1,5 @@
+{
+  "name": "BAM Media Factory",
+  "description": "Local aerial media-ingestion, three-model vision review, and human approval console for Baron Aerial Media.",
+  "requestFramePermissions": []
+}
