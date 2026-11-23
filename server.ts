@@ -26,6 +26,20 @@ import {
   validateAsset,
   validateSettings,
 } from "./src/logic.ts";
+import {
+  JournalRequestError,
+  applySavedPreset,
+  characteristicsFromInput,
+  journalExists,
+  journalFile,
+  libraryRoot,
+  overrideLockedTag,
+  readPendingReviewItems,
+  readStagedReviewItem,
+  readTagCatalog,
+  saveReviewTag,
+  type StagedReviewItem,
+} from "./src/pipeline-journal.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -47,6 +61,137 @@ function findingsForAll(assets: Array<Record<string, any>>) {
     out[a.asset_id] = validateAsset(a, sMap.get(a.shoot_id), Number(a.copy_count || 0), store.settings);
   }
   return out;
+}
+
+function sendJournalError(res: express.Response, err: unknown) {
+  if (err instanceof JournalRequestError) {
+    return res.status(err.status).json({ detail: err.message });
+  }
+  const message = err instanceof Error ? err.message : "Journal request failed";
+  return res.status(500).json({ detail: message });
+}
+
+function journalStages(item: StagedReviewItem) {
+  return [
+    { stage: "Staged", status: item.path ? "done" : "pending" },
+    { stage: "Shot", status: item.shot_characteristic ? "done" : "pending" },
+    { stage: "Alt text", status: item.alt_text ? "done" : "pending" },
+    { stage: "Tags", status: item.tags.length ? "done" : "pending" },
+    { stage: "Human review", status: item.approval_state === "PENDING_HUMAN" ? "pending" : "done" },
+  ];
+}
+
+function journalAssetRecord(item: StagedReviewItem) {
+  return {
+    asset_id: item.temp_id,
+    temp_id: item.temp_id,
+    original_filename: item.original_name,
+    media_kind: item.media_kind,
+    workflow_state: item.approval_state,
+    approval_state: item.approval_state,
+    pipeline_state: item.workflow_state,
+    shoot_id: null,
+    location_id: item.location_id,
+    agreement_score: item.agreement_score,
+    latitude: item.latitude,
+    longitude: item.longitude,
+    captured_at: item.captured_at,
+    sensor_model: null,
+    focal_length: null,
+    gimbal_pitch: item.gimbal_pitch,
+    camera_pitch: item.gimbal_pitch,
+    altitude_meters: item.altitude_m,
+    original_sha256: null,
+    source_path: item.path,
+    staging_path: item.staging_path,
+    original_path: item.original_path,
+    describes: null,
+    alt: item.alt_text,
+    alt_text: item.alt_text,
+    service_tags: item.tags,
+    tags: item.tags,
+    shot_characteristic: item.shot_characteristic,
+    final_output: null,
+    notes: null,
+    feedback: [],
+    training_candidate: false,
+    indicators: {},
+  };
+}
+
+function pendingFromJournal(item: StagedReviewItem) {
+  const asset = journalAssetRecord(item);
+  return {
+    journal: true,
+    ...asset,
+    path: item.path,
+    overrides: item.overrides,
+    screener_output: null,
+    verifier_output: null,
+    judge_output: null,
+  };
+}
+
+function journalBrief(item: StagedReviewItem) {
+  const asset = journalAssetRecord(item);
+  return {
+    journal: true,
+    asset_id: item.temp_id,
+    filename: item.original_name || item.temp_id,
+    kind: item.media_kind,
+    state: item.approval_state,
+    approval_state: item.approval_state,
+    shoot_id: null,
+    location_id: item.location_id,
+    score: item.agreement_score,
+    lat: item.latitude,
+    lon: item.longitude,
+    gps: hasGps(asset),
+    captured_at: item.captured_at,
+    backend: "journal",
+    drone_angle: droneAngleOf(item.gimbal_pitch, store.settings),
+    fail: 0,
+    warn: 0,
+    group_key: null,
+    tags: item.tags,
+    alt_text: item.alt_text,
+    shot_characteristic: item.shot_characteristic,
+    path: item.path,
+  };
+}
+
+function journalDetail(item: StagedReviewItem) {
+  const asset = journalAssetRecord(item);
+  return {
+    journal: true,
+    asset,
+    final_output: null,
+    identifier: null,
+    identifier_components: null,
+    identifier_locked: false,
+    indicators: {},
+    notes: null,
+    feedback: [],
+    training_candidate: false,
+    scene_group: null,
+    capture_meta: null,
+    frame_count: 0,
+    model_candidates: [],
+    progression: [],
+    backend: "journal",
+    evaluations: [],
+    copies: [],
+    human_corrections: [],
+    shoot: null,
+    same_shoot: [],
+    nearby: [],
+    model_group: null,
+    findings: [{ level: "info", code: "journal", message: "Loaded from the AIR journal." }],
+    stages: journalStages(item),
+    media_url: `/api/review/assets/${encodeURIComponent(item.temp_id)}/media`,
+    tag_catalog: readTagCatalog(),
+    tag_overrides: item.overrides,
+  };
 }
 
 function briefAsset(a: Record<string, any>, findings: Record<string, ReturnType<typeof validateAsset>>) {
@@ -91,6 +236,14 @@ app.post("/api/pipeline/ingest", (req, res) => {
 });
 
 app.get("/api/assets/pending", (_req, res) => {
+  if (journalExists()) {
+    try {
+      res.json(readPendingReviewItems().map(pendingFromJournal));
+    } catch (err) {
+      sendJournalError(res, err);
+    }
+    return;
+  }
   const pending = store
     .joinedAssets()
     .filter((a) => a.workflow_state === "PENDING_HUMAN")
@@ -177,7 +330,21 @@ review.get("/health", (_req, res) => {
   const loadedModels = Object.entries(store.vramModels)
     .filter(([, loaded]) => loaded)
     .map(([name]) => name);
+  let journalDetailText = "sample store (Database/tempID.db is not present)";
+  if (journalExists()) {
+    try {
+      journalDetailText = `${journalFile()} (${readPendingReviewItems().length} pending human)`;
+    } catch (err: any) {
+      journalDetailText = err?.message || "journal file could not be read";
+    }
+  }
   const checks = [
+    {
+      name: "AIR journal",
+      ok: true,
+      detail: journalDetailText,
+      level: "ok",
+    },
     { name: "PostgreSQL", ok: true, detail: "in-memory store active (provision Cloud SQL for persistence)", level: "ok" },
     { name: "Redis (live log bus)", ok: true, detail: "in-memory WebSocket event bus active", level: "ok" },
     {
@@ -233,9 +400,11 @@ review.get("/assets", (req, res) => {
 
   const assets = store.joinedAssets().sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
   const findings = findingsForAll(assets);
-  const out = [];
+  const journalOn = journalExists();
+  const sample = [];
 
   for (const a of assets) {
+    if (journalOn && a.workflow_state === "PENDING_HUMAN") continue;
     if (state && a.workflow_state !== state) continue;
     if (kind && a.media_kind !== kind) continue;
     if (shoot && (a.shoot_id || "") !== shoot) continue;
@@ -244,15 +413,93 @@ review.get("/assets", (req, res) => {
       if (!hay.includes(q)) continue;
     }
     if (issues && !(findings[a.asset_id] && findings[a.asset_id].length > 0)) continue;
-    out.push(briefAsset(a, findings));
-    if (out.length >= limit) break;
+    sample.push(briefAsset(a, findings));
   }
 
-  res.json({ assets: out });
+  const journalRows = [];
+  if (journalOn && (!state || state === "PENDING_HUMAN") && !shoot) {
+    try {
+      for (const item of readPendingReviewItems()) {
+        if (kind && item.media_kind !== kind) continue;
+        if (q) {
+          const hay = `${item.temp_id} ${item.original_name || ""} ${item.alt_text || ""} ${item.shot_characteristic || ""} ${item.location_id || ""} ${item.tags.join("\n")}`.toLowerCase();
+          if (!hay.includes(q)) continue;
+        }
+        if (issues) continue;
+        journalRows.push(journalBrief(item));
+      }
+    } catch (err) {
+      return sendJournalError(res, err);
+    }
+  }
+
+  res.json({ assets: [...journalRows, ...sample].slice(0, limit) });
+});
+
+review.get("/journal/tags", (_req, res) => {
+  if (!journalExists()) return res.json({ journal: false, tags: [] });
+  try {
+    return res.json({ journal: true, library: libraryRoot(), tags: readTagCatalog() });
+  } catch (err) {
+    return sendJournalError(res, err);
+  }
+});
+
+review.post("/journal/tags", (req, res) => {
+  try {
+    const name = typeof req.body?.name === "string" ? req.body.name : "";
+    const characteristics = characteristicsFromInput(req.body?.characteristics);
+    const tempId = typeof req.body?.temp_id === "string" ? req.body.temp_id : undefined;
+    const tag = saveReviewTag(name, characteristics, tempId);
+    return res.json({ status: "saved", tag });
+  } catch (err) {
+    return sendJournalError(res, err);
+  }
+});
+
+review.post("/assets/:asset_id/preset-tag", (req, res) => {
+  try {
+    const name = typeof req.body?.name === "string" ? req.body.name : "";
+    const applied = applySavedPreset(String(req.params.asset_id), name);
+    return res.json({ status: "applied", ...applied });
+  } catch (err) {
+    return sendJournalError(res, err);
+  }
+});
+
+review.post("/assets/:asset_id/tag", (req, res) => {
+  try {
+    const name = typeof req.body?.name === "string" ? req.body.name : "";
+    const characteristics = characteristicsFromInput(req.body?.characteristics);
+    const tag = saveReviewTag(name, characteristics, String(req.params.asset_id));
+    return res.json({ status: "saved", tag });
+  } catch (err) {
+    return sendJournalError(res, err);
+  }
+});
+
+review.post("/assets/:asset_id/tag-override", (req, res) => {
+  try {
+    const tag = typeof req.body?.tag === "string" ? req.body.tag : "";
+    const value = typeof req.body?.value === "string" ? req.body.value : "";
+    const reason = typeof req.body?.reason === "string" ? req.body.reason : "";
+    const override = overrideLockedTag(String(req.params.asset_id), tag, value, reason);
+    return res.json({ status: "overridden", override });
+  } catch (err) {
+    return sendJournalError(res, err);
+  }
 });
 
 review.get("/assets/:asset_id", (req, res) => {
   const { asset_id } = req.params;
+  if (journalExists()) {
+    try {
+      const item = readStagedReviewItem(String(asset_id));
+      if (item) return res.json(journalDetail(item));
+    } catch (err) {
+      return sendJournalError(res, err);
+    }
+  }
   const assets = store.joinedAssets();
   const a = assets.find((x) => x.asset_id === asset_id);
   if (!a) return res.status(404).json({ detail: "Asset not found" });
@@ -311,6 +558,15 @@ review.get("/assets/:asset_id", (req, res) => {
 });
 
 review.get("/assets/:asset_id/media", (req, res) => {
+  if (journalExists()) {
+    const item = readStagedReviewItem(String(req.params.asset_id));
+    if (item) {
+      const svg = renderSvgPreview(journalAssetRecord(item));
+      res.setHeader("Content-Type", "image/svg+xml");
+      res.send(svg);
+      return;
+    }
+  }
   const a = store.assets.find((x) => x.asset_id === req.params.asset_id);
   if (!a) return res.status(404).json({ detail: "Asset not found" });
   const svg = renderSvgPreview(a);
@@ -348,6 +604,47 @@ review.get("/assets/:asset_id/frames/:frame_index/:variant", (req, res) => {
 });
 
 review.get("/assets/:asset_id/exif", (req, res) => {
+  if (journalExists()) {
+    const item = readStagedReviewItem(String(req.params.asset_id));
+    if (item) {
+      const live: Record<string, string> = {
+        "File:FileName": item.original_name || "N/A",
+        "Composite:GPSLatitude": item.latitude === null ? "N/A" : String(item.latitude),
+        "Composite:GPSLongitude": item.longitude === null ? "N/A" : String(item.longitude),
+        "Composite:GPSAltitude": item.altitude_m === null ? "N/A" : String(item.altitude_m),
+        "XMP:GimbalPitchDegree": item.gimbal_pitch === null ? "N/A" : String(item.gimbal_pitch),
+        "AIR:ShotCharacteristic": item.shot_characteristic || "N/A",
+        "AIR:ApprovalState": item.approval_state || "N/A",
+        "AIR:LocationId": item.location_id || "N/A",
+        "AIR:Path": item.path || "N/A",
+      };
+      item.tags.forEach((tag, index) => {
+        live[`AIR:Tag:${index}`] = tag;
+      });
+      item.overrides.forEach((override) => {
+        live[`AIR:Override:${override.tag_name}`] = `measured=${override.measured_value}; display=${override.display_value}; reason=${override.reason}`;
+      });
+      return res.json({
+        available: true,
+        stored: {
+          source_path: item.path,
+          staging_path: item.staging_path,
+          original_path: item.original_path,
+          latitude: item.latitude,
+          longitude: item.longitude,
+          altitude_meters: item.altitude_m,
+          gimbal_pitch: item.gimbal_pitch,
+          captured_at: item.captured_at,
+          shot_characteristic: item.shot_characteristic,
+          approval_state: item.approval_state,
+          location_id: item.location_id,
+          alt_text: item.alt_text,
+          tags: item.tags,
+        },
+        live,
+      });
+    }
+  }
   const a = store.assets.find((x) => x.asset_id === req.params.asset_id);
   if (!a) return res.status(404).json({ detail: "Asset not found" });
   const stored = {

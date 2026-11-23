@@ -12,6 +12,26 @@ function connectWebSocket() {
 }
 connectWebSocket();
 
+function coordinateText(lat, lon) {
+  if (lat === null || lat === undefined || lat === "" || lon === null || lon === undefined || lon === "") {
+    return { lat: "N/A", lon: "N/A" };
+  }
+  const la = Number(lat);
+  const lo = Number(lon);
+  if (!Number.isFinite(la) || !Number.isFinite(lo) || (la === 0 && lo === 0)) {
+    return { lat: "N/A", lon: "N/A" };
+  }
+  return { lat: la.toFixed(6), lon: lo.toFixed(6) };
+}
+function showPre(id, value) {
+  const el = document.getElementById(id);
+  el.innerText = value === null || value === undefined ? "Waiting..." : typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
+function tagPhrases(value) {
+  if (Array.isArray(value)) return value.map((tag) => String(tag)).map((tag) => tag.trim()).filter(Boolean);
+  return String(value || "").split(",").map((tag) => tag.trim()).filter(Boolean);
+}
+
 // 2. Fetch the pending assets and populate the review board & telemetry
 async function loadQueue() {
   try {
@@ -22,35 +42,62 @@ async function loadQueue() {
     
     if(assets.length > 0) {
       const asset = assets[0];
-      document.getElementById("asset-id").innerText = asset.asset_id;
+      document.getElementById("asset-id").innerText = asset.temp_id || asset.asset_id;
+      const tags = tagPhrases(asset.tags || asset.service_tags);
+      const gps = coordinateText(asset.latitude, asset.longitude);
       
-      // Populate JSON boxes
-      document.getElementById("screener-json").innerText = JSON.stringify(asset.screener_output, null, 2);
-      document.getElementById("verifier-json").innerText = JSON.stringify(asset.verifier_output, null, 2);
-      document.getElementById("judge-json").innerText = JSON.stringify(asset.judge_output, null, 2);
+      if (asset.journal) {
+        showPre("screener-json", {
+          media_kind: asset.media_kind,
+          shot_characteristic: asset.shot_characteristic,
+          location_id: asset.location_id,
+          path: asset.path || asset.staging_path || asset.original_path || asset.source_path,
+          approval_state: asset.approval_state,
+        });
+        showPre("verifier-json", { alt_text: asset.alt_text ?? null });
+        showPre("judge-json", { tags, overrides: asset.overrides || [] });
+      } else {
+        showPre("screener-json", asset.screener_output);
+        showPre("verifier-json", asset.verifier_output);
+        showPre("judge-json", asset.judge_output);
+      }
 
       
       // Populate Expanded EXIF Metadata
-      document.getElementById("meta-sensor").innerText = `Sensor: ${asset.sensor_model || 'N/A'}`;
-      document.getElementById("meta-focal").innerText = `Focal: ${asset.focal_length || 'N/A'}`;
-      document.getElementById("meta-pitch").innerText = `Pitch: ${asset.camera_pitch || 'N/A'}`;
-      document.getElementById("meta-alt").innerText = `Alt: ${asset.altitude_meters ? `${parseFloat(asset.altitude_meters).toFixed(1)}m` : 'N/A'}`;
-      document.getElementById("meta-lat").innerText = asset.latitude ? parseFloat(asset.latitude).toFixed(6) : 'N/A';
-      document.getElementById("meta-lon").innerText = asset.longitude ? parseFloat(asset.longitude).toFixed(6) : 'N/A';
+      const pitch = asset.gimbal_pitch ?? asset.camera_pitch;
+      document.getElementById("meta-sensor").innerText = asset.journal
+        ? `Shot: ${asset.shot_characteristic || "N/A"}`
+        : `Sensor: ${asset.sensor_model || "N/A"}`;
+      document.getElementById("meta-focal").innerText = asset.journal
+        ? `Kind: ${asset.media_kind || "N/A"}`
+        : `Focal: ${asset.focal_length || "N/A"}`;
+      document.getElementById("meta-pitch").innerText = asset.journal
+        ? `Location: ${asset.location_id || "N/A"}`
+        : (pitch === null || pitch === undefined || pitch === "" ? "Pitch: N/A" : `Pitch: ${pitch}`);
+      document.getElementById("meta-alt").innerText = asset.altitude_meters === null || asset.altitude_meters === undefined || asset.altitude_meters === ""
+        ? "Alt: N/A"
+        : `Alt: ${parseFloat(asset.altitude_meters).toFixed(1)}m`;
+      document.getElementById("meta-lat").innerText = gps.lat;
+      document.getElementById("meta-lon").innerText = gps.lon;
 
       // Calculate and color-code the score badge
       const scoreElement = document.getElementById("ai-score");
-      const scoreValue = parseFloat(asset.agreement_score) || 0.0;
-      const percentage = Math.round(scoreValue * 100);
+      const scoreMissing = asset.agreement_score === null || asset.agreement_score === undefined || asset.agreement_score === "";
+      const scoreValue = scoreMissing ? null : parseFloat(asset.agreement_score);
+      const percentage = scoreValue === null || Number.isNaN(scoreValue) ? null : Math.round(scoreValue * 100);
       
-      scoreElement.innerText = `${percentage}%`;
       scoreElement.className = "px-3 py-1 rounded font-bold text-sm border";
-      
-      if (percentage >= 80) {
+      if (percentage === null) {
+        scoreElement.innerText = "--%";
+        scoreElement.classList.add("bg-slate-800", "text-slate-400", "border-slate-700");
+      } else if (percentage >= 80) {
+        scoreElement.innerText = `${percentage}%`;
         scoreElement.classList.add("bg-emerald-900/50", "text-emerald-400", "border-emerald-800");
       } else if (percentage >= 50) {
+        scoreElement.innerText = `${percentage}%`;
         scoreElement.classList.add("bg-amber-900/50", "text-amber-400", "border-amber-800");
       } else {
+        scoreElement.innerText = `${percentage}%`;
         scoreElement.classList.add("bg-red-900/50", "text-red-400", "border-red-800");
       }
     } else {
@@ -62,6 +109,8 @@ async function loadQueue() {
       document.getElementById("ai-score").innerText = "--%";
       document.getElementById("ai-score").className = "px-3 py-1 rounded font-bold text-sm bg-slate-800 text-slate-400 border border-slate-700";
       document.getElementById("meta-sensor").innerText = "N/A";
+      document.getElementById("meta-focal").innerText = "N/A";
+      document.getElementById("meta-pitch").innerText = "N/A";
       document.getElementById("meta-lat").innerText = "N/A";
       document.getElementById("meta-lon").innerText = "N/A";
       document.getElementById("meta-alt").innerText = "N/A";

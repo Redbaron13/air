@@ -129,13 +129,35 @@ async function loadAssets(keepSelection = false) {
   renderList();
   if (!keepSelection || !assets.some((a) => a.asset_id === selectedId)) { if (assets.length) selectAsset(assets[0].asset_id); else { selectedId = null; clear($("detail")).append(h("div", { class: "text-slate-500 italic p-6" }, "Nothing matches the current filters.")); } }
 }
+function tagPhrases(value) {
+  if (Array.isArray(value)) return value.map((tag) => String(tag)).map((tag) => tag.trim()).filter(Boolean);
+  return String(value || "").split(",").map((tag) => tag.trim()).filter(Boolean);
+}
+function tagPhraseNodes(tags) {
+  const nodes = [];
+  tagPhrases(tags).forEach((tag, i) => {
+    if (i) nodes.push(h("span", { class: "text-slate-600" }, "\u00b7"));
+    nodes.push(h("span", { class: "text-slate-300" }, tag));
+  });
+  return nodes;
+}
+function coordinatePair(lat, lon) {
+  if (lat === null || lat === undefined || lat === "" || lon === null || lon === undefined || lon === "") return null;
+  const la = Number(lat);
+  const lo = Number(lon);
+  if (!Number.isFinite(la) || !Number.isFinite(lo) || (la === 0 && lo === 0)) return null;
+  return { lat: la, lon: lo };
+}
 function renderList() {
   const list = clear($("asset-list"));
   assets.forEach((a) => list.append(h("div", { class: `p-1.5 rounded cursor-pointer hover:bg-slate-800 ${a.asset_id === selectedId ? "row-sel" : ""}`, "data-id": a.asset_id, onclick: () => selectAsset(a.asset_id) },
     h("div", { class: "flex justify-between" }, h("span", { class: "font-mono truncate" }, a.filename),
       h("span", { class: scoreClass(a.score) }, pct(a.score))),
-    h("div", { class: "text-[10px] text-slate-500 flex gap-2" },
+    h("div", { class: "text-[10px] text-slate-500 flex gap-2 flex-wrap" },
       h("span", {}, a.kind), h("span", {}, a.state), h("span", {}, a.backend), typeof angleBadge === "function" ? angleBadge(a.drone_angle) : null, a.gps ? h("span", {}, "\ud83d\udccd") : h("span", { class: "text-amber-500" }, "no GPS"),
+      a.shot_characteristic ? h("span", {}, a.shot_characteristic) : null,
+      a.location_id ? h("span", {}, a.location_id) : null,
+      ...tagPhraseNodes(a.tags),
       a.fail ? h("span", { class: "lvl-fail" }, `${a.fail} fail`) : null, a.warn ? h("span", { class: "lvl-warn" }, `${a.warn} warn`) : null))));
 }
 function step(delta) {
@@ -158,6 +180,89 @@ function kv(rows) {
 }
 function jumpLink(id, label) { return h("button", { class: "underline text-sky-400 mr-2 font-mono", onclick: () => { selectedId = id; $("f-state").value = ""; loadAssets(true).then(() => selectAsset(id)); } }, label || id); }
 
+async function postJson(path, body) {
+  return api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+}
+function renderJournalAsset(d, id) {
+  const a = d.asset;
+  const box = clear($("detail"));
+  const tags = tagPhrases(a.tags || a.service_tags);
+  const overrides = Array.isArray(d.tag_overrides) ? d.tag_overrides : [];
+  const catalog = Array.isArray(d.tag_catalog) ? d.tag_catalog : [];
+  const gps = coordinatePair(a.latitude, a.longitude);
+  const preset = h("select", { class: "bg-slate-800 rounded p-1 text-xs max-w-full" },
+    h("option", { value: "" }, "Choose a saved tag"),
+    catalog.map((tag) => h("option", { value: tag.name }, tag.locked ? `${tag.name} (locked EXIF)` : tag.name)));
+  const nameInput = h("input", { class: "bg-slate-800 rounded p-1 text-xs", placeholder: "New tag name" });
+  const keyInput = h("input", { class: "bg-slate-800 rounded p-1 text-xs", placeholder: "Characteristic key" });
+  const valueInput = h("input", { class: "bg-slate-800 rounded p-1 text-xs", placeholder: "Characteristic value" });
+  const lockedTags = catalog.filter((tag) => tag.locked);
+  const overrideTag = h("select", { class: "bg-slate-800 rounded p-1 text-xs max-w-full" },
+    h("option", { value: "" }, lockedTags.length ? "Locked EXIF tag" : "No locked tags"),
+    lockedTags.map((tag) => h("option", { value: tag.name }, tag.name)));
+  const displayInput = h("input", { class: "bg-slate-800 rounded p-1 text-xs", placeholder: "Display value" });
+  const reasonInput = h("input", { class: "bg-slate-800 rounded p-1 text-xs", placeholder: "Reason" });
+  const run = async (label, fn) => {
+    try { await fn(); await selectAsset(id); }
+    catch (e) { alert(`${label} failed: ${e.message}`); }
+  };
+  const preview = h("div", { class: "bg-black rounded flex items-center justify-center min-h-[200px]" });
+  const media = h("img", { src: d.media_url, alt: a.alt_text || a.alt || a.original_filename || a.temp_id, class: "max-h-[420px] max-w-full object-contain" });
+  media.addEventListener("error", () => clear(preview).append(h("span", { class: "text-amber-500 text-xs p-4" }, "No browser preview for this journal file.")));
+  preview.append(media);
+
+  box.append(h("div", { class: "bg-slate-900 border border-slate-800 rounded p-3" },
+    h("div", { class: "font-mono text-emerald-400 font-bold break-all" }, a.temp_id || a.asset_id),
+    h("div", { class: "text-xs text-slate-500" }, `${a.original_filename || "untitled"} \u00b7 ${a.media_kind} \u00b7 ${a.approval_state || a.workflow_state} \u00b7 journal`)));
+  box.append(section("Staged review", kv([
+    ["Temp id", a.temp_id || a.asset_id],
+    ["Media kind", a.media_kind],
+    ["Alt text", a.alt_text || a.alt],
+    ["Shot characteristic", a.shot_characteristic],
+    ["Approval", a.approval_state],
+    ["Location id", a.location_id],
+    ["Path", a.source_path || a.staging_path || a.original_path],
+    ["Latitude", gps ? fmt(gps.lat) : "N/A", !gps],
+    ["Longitude", gps ? fmt(gps.lon) : "N/A", !gps],
+  ]), gps ? h("a", { class: "text-sky-400 underline text-xs", target: "_blank", rel: "noopener", href: `https://www.openstreetmap.org/?mlat=${gps.lat}&mlon=${gps.lon}#map=17/${gps.lat}/${gps.lon}` }, "Open location in OpenStreetMap") : h("div", { class: "text-xs text-amber-500 mt-1" }, "No GPS position.")));
+  box.append(h("div", { class: "grid grid-cols-2 gap-3" }, section("Media", preview),
+    section("Tags", tags.length ? h("ul", { class: "text-xs space-y-1" }, tags.map((tag) => {
+      const over = overrides.find((item) => item.tag_name === tag);
+      return h("li", {},
+        h("div", { class: "text-slate-100" }, tag),
+        over ? h("div", { class: "text-[10px] text-amber-300" }, `measured ${over.measured_value}; display ${over.display_value}; ${over.reason}`) : null);
+    })) : h("div", { class: "text-xs text-slate-500" }, "No tags assigned."))));
+  box.append(section("Apply a saved tag",
+    h("div", { class: "flex gap-2 items-center flex-wrap" }, preset,
+      h("button", { type: "button", class: "bg-emerald-600 text-slate-950 px-3 py-1 rounded text-xs font-bold uppercase", onclick: () => run("Apply tag", () => {
+        if (!preset.value) throw new Error("Choose a saved tag");
+        return postJson(`/api/review/assets/${encodeURIComponent(id)}/preset-tag`, { name: preset.value });
+      }) }, "Apply saved tag"))));
+  box.append(section("Save a new tag",
+    h("p", { class: "text-[10px] text-slate-500 mb-2" }, "A new tag is saved only when a characteristic definition is supplied. The phrase is kept whole."),
+    h("div", { class: "grid grid-cols-3 gap-2" }, nameInput, keyInput, valueInput),
+    h("button", { type: "button", class: "mt-2 bg-sky-700 px-3 py-1 rounded text-xs font-bold uppercase", onclick: () => run("Save tag", () => {
+      const tagName = nameInput.value.trim();
+      const key = keyInput.value.trim();
+      const value = valueInput.value.trim();
+      if (!tagName) throw new Error("tag name is empty");
+      if (!key || !value) throw new Error("a new tag needs a characteristic definition");
+      const characteristics = {};
+      characteristics[key] = value;
+      return postJson(`/api/review/assets/${encodeURIComponent(id)}/tag`, { name: tagName, characteristics });
+    }) }, "Save tag")));
+  box.append(section("Override a locked EXIF tag",
+    h("p", { class: "text-[10px] text-slate-500 mb-2" }, "The measured value stays on the file. The display value and reason are stored beside it."),
+    lockedTags.length ? h("div", { class: "grid grid-cols-3 gap-2" }, overrideTag, displayInput, reasonInput) : h("div", { class: "text-xs text-slate-500" }, "This journal has no locked EXIF tags yet."),
+    lockedTags.length ? h("button", { type: "button", class: "mt-2 bg-amber-600 text-slate-950 px-3 py-1 rounded text-xs font-bold uppercase", onclick: () => run("Override", () => {
+      if (!overrideTag.value || !displayInput.value.trim() || !reasonInput.value.trim()) throw new Error("an EXIF tag override needs a tag, display value, and reason");
+      return postJson(`/api/review/assets/${encodeURIComponent(id)}/tag-override`, {
+        tag: overrideTag.value,
+        value: displayInput.value,
+        reason: reasonInput.value,
+      });
+    }) }, "Save override") : null));
+}
 async function selectAsset(id) {
   selectedId = id;
   renderList();
@@ -166,6 +271,7 @@ async function selectAsset(id) {
   let d;
   try { d = await api(`/api/review/assets/${encodeURIComponent(id)}`); } catch (e) { box.textContent = e.message; return; }
   if (selectedId !== id) return;
+  if (d.journal) { renderJournalAsset(d, id); return; }
   const a = d.asset, ev = d.evaluations[0];
   clear(box);
 
@@ -173,7 +279,7 @@ async function selectAsset(id) {
   const notes = h("textarea", { class: "w-full bg-slate-800 rounded p-1 text-xs", rows: 2, placeholder: "Reviewer notes (stored in human_corrections)" });
   const descEdit = h("textarea", { class: "w-full bg-slate-800 rounded p-1 text-xs", rows: 3 }); descEdit.value = a.describes || "";
   const altEdit = h("input", { class: "w-full bg-slate-800 rounded p-1 text-xs" }); altEdit.value = a.alt || "";
-  const tagsEdit = h("input", { class: "w-full bg-slate-800 rounded p-1 text-xs" }); tagsEdit.value = (a.service_tags || []).join(", ");
+  const tagsEdit = h("input", { class: "w-full bg-slate-800 rounded p-1 text-xs" }); tagsEdit.value = tagPhrases(a.service_tags).join(", ");
   const decide = async (action) => {
     const body = { action, notes: notes.value, expected_state: a.workflow_state };
     if (action === "approve") {
@@ -181,8 +287,8 @@ async function selectAsset(id) {
       body.rights_confirmed = true; body.metadata_confirmed = true;
       if (descEdit.value !== (a.describes || "")) body.describes = descEdit.value;
       if (altEdit.value !== (a.alt || "")) body.alt = altEdit.value;
-      const tags = tagsEdit.value.split(",").map((t) => t.trim()).filter(Boolean);
-      if (tags.join(",") !== (a.service_tags || []).join(",")) body.service_tags = tags;
+      const tags = tagPhrases(tagsEdit.value);
+      if (tags.join(",") !== tagPhrases(a.service_tags).join(",")) body.service_tags = tags;
     }
     try { await api(`/api/review/assets/${encodeURIComponent(id)}/decision`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); }
     catch (e) { alert(`Decision failed: ${e.message}`); return; }
@@ -236,7 +342,7 @@ async function selectAsset(id) {
   if (d.evaluations.length > 1) box.append(section("Earlier evaluation runs", h("pre", { class: "text-[10px] max-h-40 overflow-auto" }, d.evaluations.slice(1).map((e) => `${e.evaluated_at} score=${e.agreement_score}`).join("\n"))));
 
   // Editable result
-  box.append(section("Final description (edit before approving)", h("label", { class: "text-[10px] text-slate-500" }, "Describes"), descEdit, h("label", { class: "text-[10px] text-slate-500" }, "Alt text"), altEdit, h("label", { class: "text-[10px] text-slate-500" }, "Service tags (comma separated)"), tagsEdit, h("div", { class: "mt-2" }, notes)));
+  box.append(section("Final description (edit before approving)", h("label", { class: "text-[10px] text-slate-500" }, "Describes"), descEdit, h("label", { class: "text-[10px] text-slate-500" }, "Alt text"), altEdit, h("label", { class: "text-[10px] text-slate-500" }, "Tags (comma separated; keep each phrase intact)"), tagsEdit, h("div", { class: "mt-2" }, notes)));
 
   // Grouping
   const groupBits = [];
@@ -316,3 +422,18 @@ if (requestedAsset) {
   loadPipeline();
 }
 setInterval(() => { if (currentTab === "pipeline") loadPipeline(); }, 15000);
+setTimeout(() => {
+  const sampleSelect = selectAsset;
+  selectAsset = async function (id) {
+    selectedId = id;
+    renderList();
+    const box = clear($("detail"));
+    box.append(h("div", { class: "text-slate-500 p-4" }, "Loading..."));
+    let d;
+    try { d = await api(`/api/review/assets/${encodeURIComponent(id)}`); }
+    catch (e) { box.textContent = e.message; return; }
+    if (selectedId !== id) return;
+    if (d.journal) { renderJournalAsset(d, id); return; }
+    return sampleSelect(id);
+  };
+}, 0);
