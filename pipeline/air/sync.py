@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 from pipeline.air.journal import Journal
@@ -35,8 +36,8 @@ TABLES = (
 
 def snapshot(journal: Journal) -> dict[str, list[dict]]:
     payload = {}
-    for table in TABLES:
-        rows = journal.query(f"SELECT * FROM {table}")
+    for table, statement in _SNAPSHOT_SQL.items():
+        rows = journal.query(statement)
         payload[table] = [{key: row[key] for key in row.keys()} for row in rows]
     relations = []
     for row in payload["duplicates"]:
@@ -92,22 +93,68 @@ def _apply(url: str, payload: dict[str, list[dict]]) -> dict[str, int]:
                 continue
             for row in rows:
                 columns = list(row)
+                _check_identifiers(table, columns)
                 values = [_adapt(row[column]) for column in columns]
-                marks = ", ".join(["%s"] * len(columns))
-                conflict = _pk(table)
-                conflict_cols = {part.strip() for part in conflict.split(",")}
-                assignments = ", ".join(
-                    f"{column} = EXCLUDED.{column}" for column in columns if column not in conflict_cols
-                )
-                action = f"DO UPDATE SET {assignments}" if assignments else "DO NOTHING"
-                sql = (
-                    f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({marks}) "
-                    f"ON CONFLICT ({conflict}) {action}"
-                )
-                conn.execute(sql, values)
+                conflict = [part.strip() for part in _pk(table).split(",")]
+                assignments = [column for column in columns if column not in set(conflict)]
+                statement = _upsert(table, columns, conflict, assignments)
+                conn.execute(statement, values)
             counts[table] = len(rows)
         conn.commit()
     return counts
+
+
+_SNAPSHOT_SQL = {
+    "assets": "SELECT * FROM assets",
+    "filename_history": "SELECT * FROM filename_history",
+    "duplicates": "SELECT * FROM duplicates",
+    "keyframes": "SELECT * FROM keyframes",
+    "tag_definitions": "SELECT * FROM tag_definitions",
+    "tag_assignments": "SELECT * FROM tag_assignments",
+    "tag_overrides": "SELECT * FROM tag_overrides",
+    "tag_proposals": "SELECT * FROM tag_proposals",
+    "ai_passes": "SELECT * FROM ai_passes",
+    "locations": "SELECT * FROM locations",
+    "before_after_candidates": "SELECT * FROM before_after_candidates",
+    "before_after_members": "SELECT * FROM before_after_members",
+    "similar_shot_groups": "SELECT * FROM similar_shot_groups",
+    "similar_shot_members": "SELECT * FROM similar_shot_members",
+    "overlap_links": "SELECT * FROM overlap_links",
+    "overlap_members": "SELECT * FROM overlap_members",
+    "model_view_sets": "SELECT * FROM model_view_sets",
+    "model_view_members": "SELECT * FROM model_view_members",
+    "asset_copies": "SELECT * FROM asset_copies",
+    "case_studies": "SELECT * FROM case_studies",
+}
+
+_COLUMN_NAME = re.compile(r"^[a-z_]+$")
+
+
+def _check_identifiers(table: str, columns: list[str]) -> None:
+    allowed = set(_SNAPSHOT_SQL) | {"asset_relations"}
+    if table not in allowed:
+        raise ValueError("unknown sync table")
+    for column in columns:
+        if _COLUMN_NAME.fullmatch(column) is None:
+            raise ValueError("unknown sync column")
+
+
+def _upsert(table: str, columns: list[str], conflict: list[str], assignments: list[str]):
+    from psycopg import sql
+
+    statement = sql.SQL("INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) ").format(
+        sql.Identifier(table),
+        sql.SQL(", ").join(sql.Identifier(column) for column in columns),
+        sql.SQL(", ").join(sql.Placeholder() for _ in columns),
+        sql.SQL(", ").join(sql.Identifier(column) for column in conflict),
+    )
+    if not assignments:
+        return statement + sql.SQL("DO NOTHING")
+    updates = sql.SQL(", ").join(
+        sql.SQL("{} = EXCLUDED.{}").format(sql.Identifier(column), sql.Identifier(column))
+        for column in assignments
+    )
+    return statement + sql.SQL("DO UPDATE SET {}").format(updates)
 
 
 def _pk(table: str) -> str:

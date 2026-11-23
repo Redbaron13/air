@@ -6,6 +6,63 @@ import json
 import sqlite3
 from pathlib import Path
 
+ASSET_COLUMNS = (
+    "temp_id",
+    "media_kind",
+    "original_name",
+    "original_path",
+    "sha256",
+    "byte_size",
+    "subfolder",
+    "sequence",
+    "captured_at",
+    "latitude",
+    "longitude",
+    "altitude_m",
+    "gimbal_pitch",
+    "shot_characteristic",
+    "workflow_state",
+    "location_id",
+    "location_confidence",
+    "compiled_id",
+    "alt_text",
+    "rights_status",
+    "skip_reason",
+    "resize_path",
+    "staging_path",
+    "original_store",
+    "agreement_score",
+    "approval_state",
+)
+
+ASSET_UPDATES = {
+    "media_kind": "UPDATE assets SET media_kind = ? WHERE temp_id = ?",
+    "original_name": "UPDATE assets SET original_name = ? WHERE temp_id = ?",
+    "original_path": "UPDATE assets SET original_path = ? WHERE temp_id = ?",
+    "sha256": "UPDATE assets SET sha256 = ? WHERE temp_id = ?",
+    "byte_size": "UPDATE assets SET byte_size = ? WHERE temp_id = ?",
+    "subfolder": "UPDATE assets SET subfolder = ? WHERE temp_id = ?",
+    "sequence": "UPDATE assets SET sequence = ? WHERE temp_id = ?",
+    "captured_at": "UPDATE assets SET captured_at = ? WHERE temp_id = ?",
+    "latitude": "UPDATE assets SET latitude = ? WHERE temp_id = ?",
+    "longitude": "UPDATE assets SET longitude = ? WHERE temp_id = ?",
+    "altitude_m": "UPDATE assets SET altitude_m = ? WHERE temp_id = ?",
+    "gimbal_pitch": "UPDATE assets SET gimbal_pitch = ? WHERE temp_id = ?",
+    "shot_characteristic": "UPDATE assets SET shot_characteristic = ? WHERE temp_id = ?",
+    "workflow_state": "UPDATE assets SET workflow_state = ? WHERE temp_id = ?",
+    "location_id": "UPDATE assets SET location_id = ? WHERE temp_id = ?",
+    "location_confidence": "UPDATE assets SET location_confidence = ? WHERE temp_id = ?",
+    "compiled_id": "UPDATE assets SET compiled_id = ? WHERE temp_id = ?",
+    "alt_text": "UPDATE assets SET alt_text = ? WHERE temp_id = ?",
+    "rights_status": "UPDATE assets SET rights_status = ? WHERE temp_id = ?",
+    "skip_reason": "UPDATE assets SET skip_reason = ? WHERE temp_id = ?",
+    "resize_path": "UPDATE assets SET resize_path = ? WHERE temp_id = ?",
+    "staging_path": "UPDATE assets SET staging_path = ? WHERE temp_id = ?",
+    "original_store": "UPDATE assets SET original_store = ? WHERE temp_id = ?",
+    "agreement_score": "UPDATE assets SET agreement_score = ? WHERE temp_id = ?",
+    "approval_state": "UPDATE assets SET approval_state = ? WHERE temp_id = ?",
+}
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS assets (
     temp_id TEXT PRIMARY KEY,
@@ -256,22 +313,28 @@ class Journal:
         return self.conn.execute("SELECT * FROM assets WHERE sha256 = ?", (sha256,)).fetchone()
 
     def insert_asset(self, row: dict) -> None:
-        columns = list(row)
-        marks = ", ".join("?" for _ in columns)
-        names = ", ".join(columns)
+        unknown = set(row) - set(ASSET_COLUMNS)
+        if unknown:
+            raise ValueError(f"unknown asset column: {sorted(unknown)[0]}")
         self.execute(
-            f"INSERT INTO assets({names}) VALUES ({marks})",
-            tuple(row[name] for name in columns),
+            """
+            INSERT INTO assets(
+                temp_id, media_kind, original_name, original_path, sha256, byte_size,
+                subfolder, sequence, captured_at, latitude, longitude, altitude_m,
+                gimbal_pitch, shot_characteristic, workflow_state, location_id,
+                location_confidence, compiled_id, alt_text, rights_status, skip_reason,
+                resize_path, staging_path, original_store, agreement_score, approval_state
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            tuple(row.get(name) if name != "workflow_state" else row.get(name) or "INGESTED" for name in ASSET_COLUMNS),
         )
 
     def update_asset(self, temp_id: str, **fields) -> None:
-        if not fields:
-            return
-        sets = ", ".join(f"{name} = ?" for name in fields)
-        self.execute(
-            f"UPDATE assets SET {sets} WHERE temp_id = ?",
-            tuple(fields.values()) + (temp_id,),
-        )
+        for name, value in fields.items():
+            statement = ASSET_UPDATES.get(name)
+            if statement is None:
+                raise ValueError(f"unknown asset column: {name}")
+            self.execute(statement, (value, temp_id))
 
     def add_history(self, temp_id: str, original_name: str, stored_name: str | None) -> None:
         self.execute(
@@ -280,19 +343,39 @@ class Journal:
         )
 
     def add_duplicate(self, row: dict) -> None:
-        columns = list(row)
-        marks = ", ".join("?" for _ in columns)
         self.execute(
-            f"INSERT INTO duplicates({', '.join(columns)}) VALUES ({marks})",
-            tuple(row[name] for name in columns),
+            """
+            INSERT INTO duplicates(
+                sha256, canonical_temp_id, original_name, original_path, subfolder, sequence, duplicate_path
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row.get("sha256"),
+                row.get("canonical_temp_id"),
+                row.get("original_name"),
+                row.get("original_path"),
+                row.get("subfolder"),
+                row.get("sequence"),
+                row.get("duplicate_path"),
+            ),
         )
 
     def add_keyframe(self, row: dict) -> None:
-        columns = list(row)
-        marks = ", ".join("?" for _ in columns)
         self.execute(
-            f"INSERT OR REPLACE INTO keyframes({', '.join(columns)}) VALUES ({marks})",
-            tuple(row[name] for name in columns),
+            """
+            INSERT OR REPLACE INTO keyframes(
+                keyframe_id, parent_temp_id, label, timestamp_s, path, stem, extract_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row.get("keyframe_id"),
+                row.get("parent_temp_id"),
+                row.get("label"),
+                row.get("timestamp_s"),
+                row.get("path"),
+                row.get("stem"),
+                row.get("extract_status"),
+            ),
         )
 
     def upsert_tag_definition(self, tag: dict) -> None:
