@@ -1,10 +1,13 @@
 import json
 import shutil
+import sqlite3
 import subprocess
 import sys
 import unittest
+from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
+from unittest import mock
 
 from pipeline.air import group
 from pipeline.air.case import build_cases, case_id_for
@@ -120,6 +123,61 @@ class CaseBuildTests(unittest.TestCase):
         self.assertIn(candidate_ids[0], updated["notes"])
         self.assertIn(set_ids[0], updated["notes"])
 
+    def test_two_locations_commit_together_and_a_lost_candidate_drops_the_case(self):
+        place_id = location_id_for(*PLACE)
+        other_id = location_id_for(*OTHER)
+        _add_candidate(self.root, "BAOTHER", other_id, self.other)
+
+        built = build_cases(self.root)
+        self.assertEqual(built["cases"], 2)
+        rows = _cases(self.root)
+        self.assertEqual(
+            {row["case_id"] for row in rows},
+            {case_id_for(place_id), case_id_for(other_id)},
+        )
+        self.assertEqual({row["location_id"] for row in rows}, {place_id, other_id})
+
+        journal = Journal(journal_path(self.root))
+        journal.execute("DELETE FROM before_after_members WHERE candidate_id = 'BAOTHER'")
+        journal.execute("DELETE FROM before_after_candidates WHERE candidate_id = 'BAOTHER'")
+        journal.execute(
+            """
+            INSERT INTO case_studies(case_id, location_id, title, notes)
+            VALUES ('CS-GONE', 'LGONE', 'Gone', 'stale location')
+            """
+        )
+        journal.close()
+        again = build_cases(self.root)
+        self.assertEqual(again["cases"], 1)
+        remaining = _cases(self.root)
+        self.assertEqual([row["case_id"] for row in remaining], [case_id_for(place_id)])
+        self.assertEqual(remaining[0]["location_id"], place_id)
+
+    def test_case_build_rolls_back_when_the_second_location_fails(self):
+        other_id = location_id_for(*OTHER)
+        _add_candidate(self.root, "BAOTHER", other_id, self.other)
+        journal = Journal(journal_path(self.root))
+        journal.execute(
+            """
+            INSERT INTO case_studies(case_id, location_id, title, notes)
+            VALUES ('CS-GONE', 'LGONE', 'Gone', 'stale location')
+            """
+        )
+        journal.execute(
+            """
+            CREATE TRIGGER case_studies_fail_second
+            BEFORE INSERT ON case_studies
+            WHEN (SELECT COUNT(*) FROM case_studies) >= 2
+            BEGIN
+                SELECT RAISE(ABORT, 'second case');
+            END
+            """
+        )
+        journal.close()
+        with self.assertRaises(sqlite3.IntegrityError):
+            build_cases(self.root)
+        self.assertEqual([row["case_id"] for row in _cases(self.root)], ["CS-GONE"])
+
     def test_chain_places_case_after_model_synthesis(self):
         self.assertLess(CHAIN.index("synthesize-video"), CHAIN.index("group"))
         self.assertLess(CHAIN.index("group"), CHAIN.index("synthesize-model"))
@@ -127,7 +185,99 @@ class CaseBuildTests(unittest.TestCase):
         self.assertLess(CHAIN.index("case"), CHAIN.index("id"))
         result = _cli(self.root, "run", "--from", "case", "--to", "case")
         self.assertEqual(result["case"]["cases"], 1)
+        self.assertEqual(result["sync_after_case"]["status"], "skipped")
+        self.assertEqual(result["sync_after_case"]["tables"]["case_studies"], 1)
+        self.assertNotIn("sync", result)
         self.assertEqual(_only_case(self.root)["case_id"], case_id_for(location_id_for(*PLACE)))
+
+    def test_run_keeps_the_early_sync_and_syncs_again_after_case(self):
+        import pipeline.air.cli as cli
+
+        calls = []
+
+        def record(label, payload=None):
+            def inner(*_args, **_kwargs):
+                calls.append(label)
+                return {} if payload is None else payload
+
+            return inner
+
+        patches = [
+            mock.patch("pipeline.air.cli.prep.scan", record("prep")),
+            mock.patch("pipeline.air.cli.sync.sync_library", record("sync", {"status": "skipped", "tables": {}})),
+            mock.patch("pipeline.air.cli.ai.exif", record("exif")),
+            mock.patch("pipeline.air.cli.ai.describe", record("describe")),
+            mock.patch("pipeline.air.cli.ai.reason", record("reason")),
+            mock.patch("pipeline.air.cli.ai.validate", record("validate")),
+            mock.patch("pipeline.air.cli.ai.synthesize_video", record("synthesize-video")),
+            mock.patch("pipeline.air.cli.group.group_location", record("group-location")),
+            mock.patch("pipeline.air.cli.group.group_shots", record("group-shots")),
+            mock.patch("pipeline.air.cli.group.group_before_after", record("group-before-after")),
+            mock.patch("pipeline.air.cli.group.group_overlap", record("group-overlap")),
+            mock.patch("pipeline.air.cli.group.group_model", record("group-model")),
+            mock.patch("pipeline.air.cli.ai.synthesize_model", record("synthesize-model")),
+            mock.patch("pipeline.air.cli.case.build_cases", record("case", {"cases": 0})),
+            mock.patch("pipeline.air.cli.group.assign_ids", record("id")),
+            mock.patch("pipeline.air.cli.derive.derive", record("derive")),
+            mock.patch("pipeline.air.cli.manifest.build_manifest", record("manifest")),
+            mock.patch("pipeline.air.cli.publish.publish", record("publish")),
+        ]
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            full = cli._run(self.root, "prep", "publish")
+            self.assertEqual(
+                calls,
+                [
+                    "prep",
+                    "sync",
+                    "exif",
+                    "describe",
+                    "reason",
+                    "validate",
+                    "synthesize-video",
+                    "group-location",
+                    "group-shots",
+                    "group-before-after",
+                    "group-overlap",
+                    "group-model",
+                    "synthesize-model",
+                    "case",
+                    "sync",
+                    "id",
+                    "derive",
+                    "manifest",
+                    "publish",
+                ],
+            )
+            self.assertIn("sync_after_case", full)
+            calls.clear()
+            early = cli._run(self.root, "prep", "sync")
+            self.assertEqual(calls, ["prep", "sync"])
+            self.assertNotIn("sync_after_case", early)
+            calls.clear()
+            identified = cli._run(self.root, "id", "id")
+            self.assertEqual(calls, ["id"])
+            self.assertNotIn("sync_after_case", identified)
+
+
+def _add_candidate(root: Path, candidate_id: str, location_id: str, temp_id: str) -> None:
+    journal = Journal(journal_path(root))
+    journal.execute(
+        """
+        INSERT INTO before_after_candidates(candidate_id, location_id, shot_characteristic, status)
+        VALUES (?, ?, 'nadir', 'candidate')
+        """,
+        (candidate_id, location_id),
+    )
+    journal.execute(
+        """
+        INSERT INTO before_after_members(candidate_id, temp_id, captured_at)
+        VALUES (?, ?, ?)
+        """,
+        (candidate_id, temp_id, WHEN.isoformat()),
+    )
+    journal.close()
 
 
 def _cli_case_build(root: Path) -> dict:
@@ -144,12 +294,16 @@ def _cli(root: Path, *args: str) -> dict:
     return json.loads(completed.stdout)
 
 
-def _only_case(root: Path):
+def _cases(root: Path):
     journal = Journal(journal_path(root))
     try:
-        rows = journal.query("SELECT * FROM case_studies ORDER BY case_id")
+        return journal.query("SELECT * FROM case_studies ORDER BY case_id")
     finally:
         journal.close()
+
+
+def _only_case(root: Path):
+    rows = _cases(root)
     if len(rows) != 1:
         raise AssertionError(f"expected one case study, found {len(rows)}")
     return rows[0]

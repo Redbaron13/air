@@ -201,6 +201,7 @@ def _run(root: Path, start: str, end: str) -> dict:
             results[stage] = ai.synthesize_model(root)
         elif stage == "case":
             results[stage] = case.build_cases(root)
+            results["sync_after_case"] = sync.sync_library(root)
         elif stage == "id":
             results[stage] = group.assign_ids(root)
         elif stage == "derive":

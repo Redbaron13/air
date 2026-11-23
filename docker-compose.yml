@@ -1,8 +1,7 @@
 # Local Postgres 16 and Redis 7 for the AIR pipeline journal.
 # Does not start Ollama, Azure, the Node review console, or a vision worker.
 # Database bytes live on the named volume. The SQL bind is the first-boot schema only.
-
-name: air
+# The project name is the directory name, so each checkout keeps its own volume.
 
 services:
   postgres:
@@ -18,7 +17,8 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./pipeline/sql/init_schema.sql:/docker-entrypoint-initdb.d/init_schema.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bam_admin} -d ${POSTGRES_DB:-bam_media_factory}"]
+      # $$ is a literal $ for Compose. The container shell expands and quotes its own env.
+      test: ["CMD", "sh", "-c", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 3s
       retries: 3

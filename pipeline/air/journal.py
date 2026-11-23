@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 
 ASSET_COLUMNS = (
@@ -276,6 +277,22 @@ class Journal:
         cur = self.conn.execute(sql, params)
         self.conn.commit()
         return cur
+
+    @contextmanager
+    def transaction(self):
+        """Run the block on this connection and commit once.
+
+        Use the yielded connection for statements in the block. ``execute``
+        commits on its own, so it would end this transaction early.
+        """
+        self.conn.execute("BEGIN")
+        try:
+            yield self.conn
+        except Exception:
+            self.conn.rollback()
+            raise
+        else:
+            self.conn.commit()
 
     def query(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
         return list(self.conn.execute(sql, params))

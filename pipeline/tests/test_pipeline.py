@@ -124,6 +124,145 @@ class GroupTests(unittest.TestCase):
         self.assertIsNotNone(oblique_row["location_id"])
         journal.close()
 
+    def test_before_after_and_model_replace_rows_that_no_longer_qualify(self):
+        import shutil
+
+        root = Path("pipeline/tests/_work_group_refresh")
+        if root.exists():
+            shutil.rmtree(root)
+        (root / "Database").mkdir(parents=True)
+        journal = Journal(journal_path(root))
+        place_lat, place_lon = 40.7484, -73.9857
+        nadir_a = build_temp_id("still", "FAAA", WHEN, "AA", 1)
+        nadir_b = build_temp_id("still", "FAAB", LATER, "AA", 2)
+        oblique = build_temp_id("still", "FAAC", WHEN, "AA", 3)
+        for temp_id, when, shot in (
+            (nadir_a, WHEN, "nadir"),
+            (nadir_b, LATER, "nadir"),
+            (oblique, WHEN, "high_oblique"),
+        ):
+            journal.insert_asset(
+                {
+                    "temp_id": temp_id,
+                    "media_kind": "still",
+                    "original_name": f"{temp_id}.jpg",
+                    "captured_at": when.isoformat(),
+                    "latitude": place_lat,
+                    "longitude": place_lon,
+                    "gimbal_pitch": -90 if shot == "nadir" else -60,
+                    "shot_characteristic": shot,
+                }
+            )
+        journal.close()
+        group.group_location(root)
+        group.group_shots(root)
+        group.group_before_after(root)
+        group.group_overlap(root)
+        group.group_model(root)
+
+        journal = Journal(journal_path(root))
+        old_location = location_id_for(place_lat, place_lon)
+        self.assertEqual(
+            [row["location_id"] for row in journal.query("SELECT location_id FROM before_after_candidates")],
+            [old_location],
+        )
+        self.assertEqual(
+            [row["location_id"] for row in journal.query("SELECT location_id FROM model_view_sets")],
+            [old_location],
+        )
+        overlap_ids = [row["overlap_id"] for row in journal.query("SELECT overlap_id FROM overlap_links")]
+        shot_ids = [row["group_id"] for row in journal.query("SELECT group_id FROM similar_shot_groups")]
+        self.assertTrue(overlap_ids)
+        self.assertTrue(shot_ids)
+        journal.execute(
+            """
+            INSERT INTO before_after_candidates(candidate_id, location_id, shot_characteristic, status)
+            VALUES ('BAOLD', 'LOLD', 'nadir', 'candidate')
+            """
+        )
+        journal.execute(
+            """
+            INSERT INTO before_after_members(candidate_id, temp_id, captured_at)
+            VALUES ('BAOLD', ?, ?)
+            """,
+            (nadir_a, WHEN.isoformat()),
+        )
+        journal.execute(
+            """
+            INSERT INTO model_view_sets(set_id, location_id, status)
+            VALUES ('MVOLD', 'LOLD', 'various_views')
+            """
+        )
+        journal.execute(
+            """
+            INSERT INTO model_view_members(set_id, temp_id, shot_characteristic)
+            VALUES ('MVOLD', ?, 'nadir')
+            """,
+            (nadir_a,),
+        )
+        journal.execute(
+            """
+            INSERT INTO locations(location_id, latitude, longitude, confidence, status)
+            VALUES ('LNEW1', ?, ?, 1, 'assigned')
+            """,
+            (place_lat, place_lon),
+        )
+        journal.execute("UPDATE assets SET location_id = 'LNEW1'")
+        journal.close()
+
+        group.group_before_after(root)
+        group.group_model(root)
+
+        journal = Journal(journal_path(root))
+        candidates = journal.query("SELECT candidate_id, location_id FROM before_after_candidates")
+        members = journal.query("SELECT candidate_id, temp_id FROM before_after_members")
+        sets = journal.query("SELECT set_id, location_id FROM model_view_sets")
+        self.assertEqual([row["location_id"] for row in candidates], ["LNEW1"])
+        self.assertEqual({row["candidate_id"] for row in members}, {row["candidate_id"] for row in candidates})
+        self.assertNotIn("BAOLD", [row["candidate_id"] for row in candidates])
+        self.assertEqual(sorted(row["temp_id"] for row in members), sorted([nadir_a, nadir_b]))
+        self.assertEqual([row["location_id"] for row in sets], ["LNEW1"])
+        self.assertNotIn("MVOLD", [row["set_id"] for row in sets])
+        self.assertEqual(
+            sorted(row["temp_id"] for row in journal.query("SELECT temp_id FROM model_view_members")),
+            sorted([nadir_a, nadir_b, oblique]),
+        )
+        self.assertEqual(
+            [row["overlap_id"] for row in journal.query("SELECT overlap_id FROM overlap_links ORDER BY overlap_id")],
+            sorted(overlap_ids),
+        )
+        self.assertEqual(
+            [row["group_id"] for row in journal.query("SELECT group_id FROM similar_shot_groups ORDER BY group_id")],
+            sorted(shot_ids),
+        )
+        location_ids = {row["location_id"] for row in journal.query("SELECT location_id FROM locations")}
+        self.assertIn(old_location, location_ids)
+        self.assertIn("LNEW1", location_ids)
+        journal.execute(
+            "UPDATE assets SET captured_at = ?, shot_characteristic = 'nadir'",
+            (WHEN.isoformat(),),
+        )
+        journal.close()
+
+        cleared_candidates = group.group_before_after(root)
+        cleared_sets = group.group_model(root)
+        self.assertEqual(cleared_candidates["candidates"], 0)
+        self.assertEqual(cleared_sets["sets"], 0)
+        journal = Journal(journal_path(root))
+        self.assertEqual(journal.query("SELECT candidate_id FROM before_after_candidates"), [])
+        self.assertEqual(journal.query("SELECT candidate_id FROM before_after_members"), [])
+        self.assertEqual(journal.query("SELECT set_id FROM model_view_sets"), [])
+        self.assertEqual(journal.query("SELECT set_id FROM model_view_members"), [])
+        self.assertEqual(
+            [row["overlap_id"] for row in journal.query("SELECT overlap_id FROM overlap_links ORDER BY overlap_id")],
+            sorted(overlap_ids),
+        )
+        self.assertEqual(
+            [row["group_id"] for row in journal.query("SELECT group_id FROM similar_shot_groups ORDER BY group_id")],
+            sorted(shot_ids),
+        )
+        journal.close()
+
 
 class ModelAndWatermarkTests(unittest.TestCase):
     def test_model_views_stay_individual_and_combined(self):

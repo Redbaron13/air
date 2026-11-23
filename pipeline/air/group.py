@@ -142,34 +142,35 @@ def group_shots(root: Path) -> dict:
 def group_before_after(root: Path) -> dict:
     journal = _open(root)
     try:
-        buckets = defaultdict(list)
-        for asset in journal.assets():
-            if asset["location_id"] and asset["shot_characteristic"] and asset["captured_at"]:
-                buckets[(asset["location_id"], asset["shot_characteristic"])].append(asset)
-        created = 0
-        for (location_id, characteristic), members in buckets.items():
-            dates = {member["captured_at"][:10] for member in members}
-            if len(dates) < 2:
-                continue
-            candidate_id = "BA" + unique4(f"{location_id}|{characteristic}")
-            journal.execute(
-                """
-                INSERT INTO before_after_candidates(candidate_id, location_id, shot_characteristic, status)
-                VALUES (?, ?, ?, 'candidate')
-                ON CONFLICT(candidate_id) DO UPDATE SET status = 'candidate'
-                """,
-                (candidate_id, location_id, characteristic),
-            )
-            for member in members:
-                journal.execute(
+        with journal.transaction() as conn:
+            buckets = defaultdict(list)
+            for asset in journal.assets():
+                if asset["location_id"] and asset["shot_characteristic"] and asset["captured_at"]:
+                    buckets[(asset["location_id"], asset["shot_characteristic"])].append(asset)
+            conn.execute("DELETE FROM before_after_members")
+            conn.execute("DELETE FROM before_after_candidates")
+            created = 0
+            for (location_id, characteristic), members in buckets.items():
+                dates = {member["captured_at"][:10] for member in members}
+                if len(dates) < 2:
+                    continue
+                candidate_id = "BA" + unique4(f"{location_id}|{characteristic}")
+                conn.execute(
                     """
-                    INSERT INTO before_after_members(candidate_id, temp_id, captured_at)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(candidate_id, temp_id) DO UPDATE SET captured_at = excluded.captured_at
+                    INSERT INTO before_after_candidates(candidate_id, location_id, shot_characteristic, status)
+                    VALUES (?, ?, ?, 'candidate')
                     """,
-                    (candidate_id, member["temp_id"], member["captured_at"]),
+                    (candidate_id, location_id, characteristic),
                 )
-            created += 1
+                for member in members:
+                    conn.execute(
+                        """
+                        INSERT INTO before_after_members(candidate_id, temp_id, captured_at)
+                        VALUES (?, ?, ?)
+                        """,
+                        (candidate_id, member["temp_id"], member["captured_at"]),
+                    )
+                created += 1
         return {"candidates": created}
     finally:
         journal.close()
@@ -225,34 +226,35 @@ def group_overlap(root: Path) -> dict:
 def group_model(root: Path) -> dict:
     journal = _open(root)
     try:
-        by_location = defaultdict(list)
-        for asset in journal.assets("still"):
-            if asset["location_id"] and asset["shot_characteristic"]:
-                by_location[asset["location_id"]].append(asset)
-        created = 0
-        for location_id, members in by_location.items():
-            characteristics = {member["shot_characteristic"] for member in members}
-            if len(characteristics) < 2:
-                continue
-            set_id = "MV" + unique4(location_id + "|views")
-            journal.execute(
-                """
-                INSERT INTO model_view_sets(set_id, location_id, status)
-                VALUES (?, ?, 'various_views')
-                ON CONFLICT(set_id) DO UPDATE SET status = 'various_views'
-                """,
-                (set_id, location_id),
-            )
-            for member in members:
-                journal.execute(
+        with journal.transaction() as conn:
+            by_location = defaultdict(list)
+            for asset in journal.assets("still"):
+                if asset["location_id"] and asset["shot_characteristic"]:
+                    by_location[asset["location_id"]].append(asset)
+            conn.execute("DELETE FROM model_view_members")
+            conn.execute("DELETE FROM model_view_sets")
+            created = 0
+            for location_id, members in by_location.items():
+                characteristics = {member["shot_characteristic"] for member in members}
+                if len(characteristics) < 2:
+                    continue
+                set_id = "MV" + unique4(location_id + "|views")
+                conn.execute(
                     """
-                    INSERT INTO model_view_members(set_id, temp_id, shot_characteristic)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(set_id, temp_id) DO UPDATE SET shot_characteristic = excluded.shot_characteristic
+                    INSERT INTO model_view_sets(set_id, location_id, status)
+                    VALUES (?, ?, 'various_views')
                     """,
-                    (set_id, member["temp_id"], member["shot_characteristic"]),
+                    (set_id, location_id),
                 )
-            created += 1
+                for member in members:
+                    conn.execute(
+                        """
+                        INSERT INTO model_view_members(set_id, temp_id, shot_characteristic)
+                        VALUES (?, ?, ?)
+                        """,
+                        (set_id, member["temp_id"], member["shot_characteristic"]),
+                    )
+                created += 1
         return {"sets": created}
     finally:
         journal.close()
