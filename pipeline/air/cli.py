@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from pipeline.air import ai, derive, group, manifest, prep, publish, review, sync
+from pipeline.air import ai, case, derive, group, manifest, prep, publish, review, sync
 from pipeline.air.paths import library_root
 
 
@@ -70,6 +70,10 @@ def main(argv: list[str] | None = None) -> int:
     group_parser = sub.add_parser("group")
     group_parser.add_argument("kind", choices=("location", "shots", "before-after", "overlap", "model"))
 
+    case_parser = sub.add_parser("case")
+    case_sub = case_parser.add_subparsers(dest="case_command", required=True)
+    case_sub.add_parser("build")
+
     sub.add_parser("id")
     derive_parser = sub.add_parser("derive")
     derive_parser.add_argument("--watermark")
@@ -128,6 +132,8 @@ def _dispatch(root: Path, args) -> dict:
             "overlap": group.group_overlap,
             "model": group.group_model,
         }[args.kind](root)
+    if args.command == "case" and args.case_command == "build":
+        return case.build_cases(root)
     if args.command == "id":
         return group.assign_ids(root)
     if args.command == "derive":
@@ -153,6 +159,7 @@ CHAIN = (
     "synthesize-video",
     "group",
     "synthesize-model",
+    "case",
     "id",
     "derive",
     "manifest",
@@ -192,6 +199,9 @@ def _run(root: Path, start: str, end: str) -> dict:
             }
         elif stage == "synthesize-model":
             results[stage] = ai.synthesize_model(root)
+        elif stage == "case":
+            results[stage] = case.build_cases(root)
+            results["sync_after_case"] = sync.sync_library(root)
         elif stage == "id":
             results[stage] = group.assign_ids(root)
         elif stage == "derive":

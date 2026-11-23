@@ -25,13 +25,87 @@ def resolve_backend() -> str:
     return "skip"
 
 
+# Capture and shot fields belong to EXIF. A vision model is not allowed to set them.
+_TELEMETRY_KEYS = {
+    "latitude",
+    "longitude",
+    "altitude_m",
+    "altitude",
+    "altitude_meters",
+    "gps",
+    "gps_valid",
+    "captured_at",
+    "captured_at_local",
+    "utc_offset",
+    "gimbal_pitch",
+    "gimbal_pitch_deg",
+    "gimbal_yaw",
+    "gimbal_yaw_deg",
+    "flight_yaw_deg",
+    "flight_roll_deg",
+    "rel_altitude_m",
+    "heading_deg",
+    "sensor_model",
+    "focal_length_mm",
+    "focal_length",
+    "orientation",
+    "camera_make",
+    "lens_model",
+    "iso",
+    "shutter_speed",
+    "aperture",
+    "camera_serial",
+    "shot_characteristic",
+    "drone_angle",
+    "altitude_band",
+    "shot_type_from_exif",
+    "exif_basis",
+    "camera_perspective",
+    "shot_type_matches_exif",
+    "facing_compass",
+    "facing_relative",
+    "facing_side",
+    "facing_reference",
+    "viewed_from",
+    "mapping_role",
+}
+_DROP_BLOCKS = {"capture", "address", "flight"}
+
+
+def sanitize_model_output(raw) -> dict:
+    """Keep model content. Drop GPS, time, gimbal, and other EXIF fields."""
+    if not isinstance(raw, dict):
+        return {}
+    return _strip_telemetry(raw)
+
+
+def _strip_telemetry(value):
+    if isinstance(value, list):
+        return [_strip_telemetry(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    cleaned = {}
+    for key, item in value.items():
+        if key in _DROP_BLOCKS or key in _TELEMETRY_KEYS:
+            continue
+        cleaned[key] = _strip_telemetry(item) if isinstance(item, (dict, list)) else item
+    return cleaned
+
+
 def complete_json(backend: str, prompt: str, image_path: str | None = None) -> dict:
     if backend == "skip":
-        return {"skipped": True, "note": "No vision backend was called."}
+        return {
+            "skipped": True,
+            "note": "No vision backend was called.",
+            "description": None,
+            "alt_text": None,
+            "tags": [],
+            "proposed": [],
+        }
     if backend == "ollama":
-        return _ollama(prompt, image_path)
+        return sanitize_model_output(_ollama(prompt, image_path))
     if backend == "azure":
-        return _azure(prompt, image_path)
+        return sanitize_model_output(_azure(prompt, image_path))
     raise BackendError(f"unknown vision backend: {backend}")
 
 
