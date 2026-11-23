@@ -1,0 +1,112 @@
+{
+  "tags": [
+    {
+      "name": "nadir",
+      "locked": true,
+      "source": "exif",
+      "characteristics": {"gimbal_band": "nadir"}
+    },
+    {
+      "name": "high_oblique",
+      "locked": true,
+      "source": "exif",
+      "characteristics": {"gimbal_band": "high_oblique"}
+    },
+    {
+      "name": "medium_oblique",
+      "locked": true,
+      "source": "exif",
+      "characteristics": {"gimbal_band": "medium_oblique"}
+    },
+    {
+      "name": "low_oblique",
+      "locked": true,
+      "source": "exif",
+      "characteristics": {"gimbal_band": "low_oblique"}
+    },
+    {
+      "name": "horizon",
+      "locked": true,
+      "source": "exif",
+      "characteristics": {"gimbal_band": "horizon"}
+    },
+    {
+      "name": "low altitude",
+      "locked": true,
+      "source": "exif",
+      "characteristics": {"altitude_band": "low"}
+    },
+    {
+      "name": "medium altitude",
+      "locked": true,
+      "source": "exif",
+      "characteristics": {"altitude_band": "medium"}
+    },
+    {
+      "name": "high altitude",
+      "locked": true,
+      "source": "exif",
+      "characteristics": {"altitude_band": "high"}
+    },
+    {
+      "name": "standing seam metal roof",
+      "locked": false,
+      "source": "preset",
+      "characteristics": {"visible_subject": "standing seam metal roof"}
+    },
+    {
+      "name": "asphalt shingle ridge",
+      "locked": false,
+      "source": "preset",
+      "characteristics": {"visible_subject": "asphalt shingle ridge"}
+    },
+    {
+      "name": "concrete bridge pier",
+      "locked": false,
+      "source": "preset",
+      "characteristics": {"visible_subject": "concrete bridge pier"}
+    },
+    {
+      "name": "solar array racking",
+      "locked": false,
+      "source": "preset",
+      "characteristics": {"visible_subject": "solar array racking"}
+    },
+    {
+      "name": "construction progress frame",
+      "locked": false,
+      "source": "preset",
+      "characteristics": {"visible_subject": "construction progress"}
+    },
+    {
+      "name": "roof damage close view",
+      "locked": false,
+      "source": "preset",
+      "characteristics": {"visible_subject": "roof damage"}
+    },
+    {
+      "name": "parking lot striping",
+      "locked": false,
+      "source": "preset",
+      "characteristics": {"visible_subject": "parking lot striping"}
+    },
+    {
+      "name": "tree line and shadow",
+      "locked": false,
+      "source": "preset",
+      "characteristics": {"visible_subject": "tree line"}
+    },
+    {
+      "name": "waterfront bulkhead",
+      "locked": false,
+      "source": "preset",
+      "characteristics": {"visible_subject": "waterfront bulkhead"}
+    },
+    {
+      "name": "tower crane and deck",
+      "locked": false,
+      "source": "preset",
+      "characteristics": {"visible_subject": "tower crane"}
+    }
+  ]
+}

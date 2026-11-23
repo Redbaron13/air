@@ -33,6 +33,10 @@ coverage/
 .vscode/
 .idea/
 
+# Local media library created by setup.sh / air prep
+library/
+pipeline/tests/_work*/
+
 # Local media pipeline data
 bam-media-pipeline/storage/active/*
 bam-media-pipeline/storage/exports/*
