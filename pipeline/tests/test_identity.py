@@ -47,8 +47,9 @@ class IdentityTests(unittest.TestCase):
     def test_keyframe_shares_video_stem(self):
         self.assertEqual(shared_stem("7K2M"), "7K")
         key = build_keyframe_id("7K2M", 5)
-        self.assertEqual(key, "K7K05")
+        self.assertEqual(key, "K7K2M05")
         self.assertEqual(parse_keyframe_id(key)["stem"], "7K")
+        self.assertNotEqual(build_keyframe_id("AA01", 1), build_keyframe_id("AA02", 1))
 
     def test_compiled_id_carries_location_code(self):
         compiled = build_compiled_id(WHEN, 3, "LH7KABC", "still", "A01", "K4M2")

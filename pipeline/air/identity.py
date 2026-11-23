@@ -47,7 +47,7 @@ _TEMP_RE = re.compile(
     r"(?P<dd>\d{2})(?P<mon>[AFRPMJYGSOND])(?P<yy>\d{2})(?P<hms>\d{6})-"
     r"(?P<sub>[0-9A-Z]{2})(?P<seq>\d{3})$"
 )
-_KEYFRAME_RE = re.compile(r"^K(?P<stem>[0-9A-Z]{2})(?P<seq>\d{2})$")
+_KEYFRAME_RE = re.compile(r"^K(?P<unique>[0-9A-Z]{4})(?P<seq>\d{2})$")
 _COMPILED_RE = re.compile(
     r"^(?P<date>\d{2}[AFRPMJYGSOND]\d{2})-"
     r"(?P<seq>\d{3})(?P<set>[0-9A-Z]{3})(?P<type>PHO|VID|MOD|OTH)(?P<batch>[0-9A-Z]{3})-"
@@ -124,17 +124,23 @@ def shared_stem(unique: str) -> str:
 
 
 def build_keyframe_id(video_unique: str, index: int) -> str:
-    """Keyframe id shares the video stem and uses K plus 01-99."""
+    """Keyframe id keeps the video's four-character token so two videos that share a stem do not collide.
+
+    The first two characters of that token are still the shared stem. Example: video unique 7K2M, frame 5 is K7K2M05.
+    """
+    if not re.fullmatch(r"[0-9A-Z]{4}", video_unique):
+        raise ValueError("unique token must be 4 characters")
     if index < 1 or index > 99:
         raise ValueError("keyframe index must be 01-99")
-    return f"K{shared_stem(video_unique)}{index:02d}"
+    return f"K{video_unique}{index:02d}"
 
 
 def parse_keyframe_id(value: str) -> dict:
     match = _KEYFRAME_RE.fullmatch(value or "")
     if not match:
         raise ValueError(f"not a keyframe id: {value}")
-    return {"stem": match.group("stem"), "index": int(match.group("seq"))}
+    unique = match.group("unique")
+    return {"unique": unique, "stem": unique[:2], "index": int(match.group("seq"))}
 
 
 def location_id_for(latitude: float, longitude: float) -> str:

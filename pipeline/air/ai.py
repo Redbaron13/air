@@ -169,9 +169,9 @@ def _per_item(root: Path, stage: str) -> dict:
             if stage == "describe":
                 payload = _describe_one(backend, kind, path)
             elif stage == "reason":
-                payload = _reason_one(journal, backend, target_id, scope, catalog)
+                payload = _reason_one(journal, backend, target_id, scope, catalog, path)
             else:
-                payload = _validate_one(journal, backend, target_id, scope)
+                payload = _validate_one(journal, backend, target_id, scope, path)
             journal.add_pass(target_id, scope, stage, backend, payload)
             if scope in {"still", "view"} and stage == "validate":
                 _apply_validation(journal, target_id, payload)
@@ -203,17 +203,18 @@ def _describe_one(backend: str, kind: str, path: str | None) -> dict:
     }
 
 
-def _reason_one(journal: Journal, backend: str, target_id: str, scope: str, catalog: list[dict]) -> dict:
+def _reason_one(journal: Journal, backend: str, target_id: str, scope: str, catalog: list[dict], path: str | None) -> dict:
     locked = [name for name in journal.tags_for(target_id) if _is_locked(catalog, name)]
     if backend == "skip":
         return {"tags": locked, "proposed": [], "note": "Vision backend skipped. No content tags were added."}
     names = [item["name"] for item in catalog if not item.get("locked")]
+    prior = _describe_payload(journal, target_id, scope)
     prompt = (
-        "Choose tags from this catalog only. Return JSON with keys tags (array of catalog names) "
+        "Choose tags for this one file from this catalog only. Return JSON with keys tags (array of catalog names) "
         "and proposed (array of new multiword names). Do not shorten a tag into a coarse service slug. "
-        f"Catalog: {names}"
+        f"Catalog: {names}. Prior description JSON: {prior or 'none'}."
     )
-    result = complete_json(backend, prompt, None)
+    result = complete_json(backend, prompt, path)
     requested = [str(item) for item in result.get("tags") or []]
     accepted, rejected = select_tags(catalog, requested)
     for name in accepted:
@@ -236,15 +237,23 @@ def _is_locked(catalog: list[dict], name: str) -> bool:
     return False
 
 
-def _validate_one(journal: Journal, backend: str, target_id: str, scope: str) -> dict:
-    described = journal.passes_for(target_id, scope)
-    prior = next((row for row in described if row["stage"] == "describe"), None)
+def _describe_payload(journal: Journal, target_id: str, scope: str) -> str | None:
+    described = [row for row in journal.passes_for(target_id, scope) if row["stage"] == "describe"]
+    if not described:
+        return None
+    return described[-1]["payload_json"]
+
+
+def _validate_one(journal: Journal, backend: str, target_id: str, scope: str, path: str | None) -> dict:
+    prior = _describe_payload(journal, target_id, scope)
     if backend == "skip":
         return {"agreement_score": 0.0, "alt_text": None, "note": "Vision backend skipped."}
-    prompt = "Compare your own visual read with this JSON and return agreement_score from 0 to 1 and alt_text."
-    if prior:
-        prompt += " " + prior["payload_json"]
-    result = complete_json(backend, prompt, None)
+    prompt = (
+        "Look at this file again and compare that visual read with the prior description JSON. "
+        "Return agreement_score from 0 to 1 and alt_text. "
+        f"Prior description JSON: {prior or 'none'}."
+    )
+    result = complete_json(backend, prompt, path)
     try:
         score = float(result.get("agreement_score", 0))
     except (TypeError, ValueError):
@@ -255,7 +264,13 @@ def _validate_one(journal: Journal, backend: str, target_id: str, scope: str) ->
 def _apply_validation(journal: Journal, temp_id: str, payload: dict) -> None:
     score = float(payload.get("agreement_score") or 0)
     alt = payload.get("alt_text")
-    journal.update_asset(temp_id, agreement_score=score, alt_text=alt, workflow_state=_state_for(journal, temp_id, score, alt))
+    journal.update_asset(
+        temp_id,
+        agreement_score=score,
+        alt_text=alt,
+        workflow_state="VALIDATED",
+        approval_state=_state_for(journal, temp_id, score, alt),
+    )
 
 
 def _state_for(journal: Journal, temp_id: str, score: float, alt: str | None) -> str:
@@ -300,7 +315,7 @@ def synthesize_video(root: Path) -> dict:
                 "part_count": len(parts),
             }
             journal.add_pass(asset["temp_id"], "video", "synthesize", backend, payload)
-            journal.update_asset(asset["temp_id"], workflow_state="PENDING_HUMAN")
+            journal.update_asset(asset["temp_id"], workflow_state="SYNTHESIZED")
             written += 1
     finally:
         journal.close()

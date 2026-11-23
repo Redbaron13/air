@@ -9,7 +9,7 @@ The review console in the repository root is separate. It still serves the in-me
 These ids are stored on the same asset and are not substitutes for each other.
 
 - Temp id, assigned by `prep scan`. Example: `P7K2M_21A26131521-AA001`. The first letter is `P` still, `M` video, `D` 3D model, or `X` other media. The next four characters are unique in the journal. The stamp is `DDMYY` plus `HHMMSS`. The month letter is shared with the compiled id: Jan A, Feb F, Mar R, Apr P, May M, Jun J, Jul Y, Aug G, Sep S, Oct O, Nov N, Dec D. 21 January 2026 is `21A26`. 21 June 2026 is `21J26`.
-- Keyframe id, assigned for a video still. Example: `K7K01`. It keeps the first two characters of the video unique token. The keyframes table stores the parent video temp id, the timestamp, and the label (`V5` 15s, `V3` 30s, `V4` 45s, `V1` 60s when the clip is longer than one minute, `V0` ten seconds before the end).
+- Keyframe id, assigned for a video still. Example: `K7K2M01` for video unique `7K2M`. It includes the whole unique token, so two videos that share the first two characters do not reuse a frame id or a staging file. Those first two characters are still the shared stem. The keyframes table stores the parent video temp id, the timestamp, and the label (`V5` 15s, `V3` 30s, `V4` 45s, `V1` 60s when the clip is longer than one minute, `V0` ten seconds before the end).
 - Location id, assigned by `group location`. One place across dates. Every photo of that place stays on it, including photos that are not in a before-and-after pair.
 - Overlap link id, assigned by `group overlap`. One visit at that place. Three or more members whose mean spacing is 30 meters or less are marked `photogrammetry`. A smaller or wider visit is stored as `insufficient`.
 - Compiled id, assigned by `id` after the location confidence is at least 0.7. Example: `21A26-003H7KPHOA01-K4M2`. The location code sits in the middle. Tags and capture facts stay on the row so a website search can find the file.
@@ -84,7 +84,7 @@ python3 -m pipeline.air --library library <command>
 | `manifest` | `exports/website.manifest.json` | `APPROVED` or `AUTO_ACCEPTED`, alt text, WebP for stills |
 | `publish` | local `Output/` always; R2 only with credentials | R2 settings below |
 
-`run --from prep --to manifest` runs the chain from the first named stage through the second. The stage names are `prep`, `sync`, `exif`, `describe`, `reason`, `validate`, `synthesize`, `group`, `id`, `derive`, `manifest`, `publish`.
+`run --from prep --to manifest` runs the chain from the first named stage through the second. The stage names are `prep`, `sync`, `exif`, `describe`, `reason`, `validate`, `synthesize-video`, `group`, `synthesize-model`, `id`, `derive`, `manifest`, `publish`. Video synthesis runs after each keyframe has its own description. Model synthesis runs after `group model` has written the view set.
 
 Video and 3D files are ingested and tagged. `derive` does not invent a still for them. Their manifest entries use `media_kind` of `video` or `model3d`.
 
@@ -96,7 +96,7 @@ Video and 3D files are ingested and tagged. `derive` does not invent a still for
 - `ollama` calls `OLLAMA_URL` (default `http://127.0.0.1:11434`) with `OLLAMA_VISION_MODEL` (default `qwen2.5-vl:3b`). This is the default when `OLLAMA_URL` is set and `AIR_VISION_BACKEND` is empty.
 - `azure` calls `AZURE_OPENAI_ENDPOINT` (default `https://bam-pipeline.openai.azure.com`) and `AZURE_OPENAI_DEPLOYMENT` (default `gpt-4o`). It exits unless `AZURE_OPENAI_API_KEY` is set. The key is read from the environment and is not written by these commands.
 
-Describe, reason, and validate run on one still, one keyframe, or one model view. Synthesize reads those finished rows and writes the combined video or model-set record. It does not delete the individual rows. A video is not auto-accepted from a single keyframe. A model set is not auto-accepted from a single view. Auto-accept also requires an agreement score of at least 0.85, alt text, at least 10 content tags from the catalog, and `rights_status` of `cleared`. Anything short of that stays `PENDING_HUMAN`.
+Describe, reason, and validate each receive that one still, keyframe, or model view. Reason and validate also receive the description already stored for that file. Synthesize reads those finished rows and writes the combined video or model-set record. It does not delete the individual rows. A video is not auto-accepted from a single keyframe. A model set is not auto-accepted from a single view. Auto-accept also requires an agreement score of at least 0.85, alt text, at least 10 content tags from the catalog, and `rights_status` of `cleared`. Anything short of that stays `PENDING_HUMAN` on `approval_state`. `id` and `derive` update `workflow_state` and leave `approval_state` in place, so a later manifest still includes an approved still.
 
 ## Watermark and originals
 
@@ -106,7 +106,7 @@ Describe, reason, and validate run on one still, one keyframe, or one model view
 
 ## Manifest
 
-`manifest` includes an asset only when its state is `APPROVED` or `AUTO_ACCEPTED` and alt text is present. A still also needs a `.webp` copy. The file includes the detailed tags, the alt text, the media kind, and the copy keys. It does not include latitude, longitude, altitude, gimbal pitch, or a city.
+`manifest` includes an asset only when `approval_state` is `APPROVED` or `AUTO_ACCEPTED` and alt text is present. A still also needs a `.webp` copy. The file includes the detailed tags, the alt text, the media kind, and the copy keys. It does not include latitude, longitude, altitude, gimbal pitch, or a city.
 
 ## Database
 

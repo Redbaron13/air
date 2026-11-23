@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS assets (
     staging_path TEXT,
     original_store TEXT,
     agreement_score REAL,
+    approval_state TEXT,
     UNIQUE(sha256)
 );
 
@@ -206,6 +207,9 @@ class Journal:
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(assets)")}
+        if "approval_state" not in columns:
+            self.conn.execute("ALTER TABLE assets ADD COLUMN approval_state TEXT")
         self.conn.commit()
 
     def close(self) -> None:

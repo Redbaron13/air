@@ -18,7 +18,7 @@ def build_manifest(root: Path) -> dict:
     try:
         assets = []
         for asset in journal.assets():
-            if asset["workflow_state"] not in PUBLISHABLE:
+            if asset["approval_state"] not in PUBLISHABLE:
                 continue
             if not asset["alt_text"]:
                 continue

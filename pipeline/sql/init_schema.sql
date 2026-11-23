@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS assets (
     resize_path TEXT,
     staging_path TEXT,
     original_store TEXT,
-    agreement_score DOUBLE PRECISION
+    agreement_score DOUBLE PRECISION,
+    approval_state TEXT
 );
 
 CREATE TABLE IF NOT EXISTS filename_history (
@@ -67,7 +68,7 @@ CREATE TABLE IF NOT EXISTS tag_definitions (
 );
 
 CREATE TABLE IF NOT EXISTS tag_assignments (
-    temp_id TEXT NOT NULL REFERENCES assets(temp_id),
+    temp_id TEXT NOT NULL,
     tag_name TEXT NOT NULL REFERENCES tag_definitions(name),
     source TEXT NOT NULL,
     PRIMARY KEY (temp_id, tag_name)
@@ -186,6 +187,9 @@ CREATE TABLE IF NOT EXISTS asset_copies (
     sha256 TEXT,
     watermark_label TEXT
 );
+
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS approval_state TEXT;
+ALTER TABLE tag_assignments DROP CONSTRAINT IF EXISTS tag_assignments_temp_id_fkey;
 
 CREATE INDEX IF NOT EXISTS assets_location_idx ON assets(location_id);
 CREATE INDEX IF NOT EXISTS assets_compiled_idx ON assets(compiled_id);

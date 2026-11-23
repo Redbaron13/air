@@ -219,6 +219,108 @@ class ModelAndWatermarkTests(unittest.TestCase):
         journal.close()
 
 
+class ReviewFixTests(unittest.TestCase):
+    def test_reason_and_validate_send_the_image_and_description(self):
+        from unittest.mock import patch
+
+        root = Path("pipeline/tests/_work_vision")
+        if root.exists():
+            import shutil
+
+            shutil.rmtree(root)
+        (root / "staging").mkdir(parents=True)
+        (root / "Database").mkdir(parents=True)
+        image = root / "staging" / "roof.jpg"
+        image.write_bytes(b"frame-bytes")
+        journal = Journal(journal_path(root))
+        prep.seed_presets(journal)
+        temp_id = build_temp_id("still", "FFFF", WHEN, "AA", 1)
+        journal.insert_asset(
+            {
+                "temp_id": temp_id,
+                "media_kind": "still",
+                "original_name": "roof.jpg",
+                "staging_path": str(image),
+            }
+        )
+        journal.add_pass(temp_id, "still", "describe", "skip", {"description": "standing seam metal roof", "alt_text": None})
+        journal.close()
+        calls = []
+
+        def fake(backend, prompt, image_path=None):
+            calls.append((backend, prompt, image_path))
+            return {"tags": [], "proposed": [], "agreement_score": 0.2, "alt_text": "roof"}
+
+        previous = os.environ.get("AIR_VISION_BACKEND")
+        os.environ["AIR_VISION_BACKEND"] = "ollama"
+        try:
+            with patch("pipeline.air.ai.complete_json", fake):
+                ai.reason(root)
+                ai.validate(root)
+        finally:
+            if previous is None:
+                os.environ.pop("AIR_VISION_BACKEND", None)
+            else:
+                os.environ["AIR_VISION_BACKEND"] = previous
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(call[2] == str(image) for call in calls))
+        self.assertTrue(all("standing seam metal roof" in call[1] for call in calls))
+
+    def test_id_and_derive_keep_approval_for_the_manifest(self):
+        from PIL import Image
+
+        root = Path("pipeline/tests/_work_approval")
+        if root.exists():
+            import shutil
+
+            shutil.rmtree(root)
+        (root / "originals").mkdir(parents=True)
+        (root / "Database").mkdir(parents=True)
+        (root / "exports").mkdir(parents=True)
+        image_path = root / "originals" / "roof.jpg"
+        Image.new("RGB", (40, 30), (20, 20, 20)).save(image_path, "JPEG")
+        journal = Journal(journal_path(root))
+        temp_id = build_temp_id("still", "GGGG", WHEN, "AA", 1)
+        journal.insert_asset(
+            {
+                "temp_id": temp_id,
+                "media_kind": "still",
+                "original_name": "roof.jpg",
+                "original_store": str(image_path),
+                "sha256": "approval-sample",
+                "captured_at": WHEN.isoformat(),
+                "location_id": "LH7KABC",
+                "location_confidence": 1,
+                "alt_text": "Standing seam metal roof on a low commercial building.",
+                "approval_state": "AUTO_ACCEPTED",
+                "workflow_state": "VALIDATED",
+            }
+        )
+        journal.close()
+        group.assign_ids(root)
+        derive.derive(root, "MARK")
+        journal = Journal(journal_path(root))
+        row = journal.conn.execute("SELECT * FROM assets WHERE temp_id = ?", (temp_id,)).fetchone()
+        self.assertEqual(row["approval_state"], "AUTO_ACCEPTED")
+        self.assertEqual(row["workflow_state"], "DERIVED")
+        self.assertTrue(row["compiled_id"])
+        journal.close()
+        result = manifest.build_manifest(root)
+        self.assertEqual(result["assets"], 1)
+
+    def test_model_synthesis_follows_grouping(self):
+        from pipeline.air.cli import CHAIN
+
+        self.assertLess(CHAIN.index("synthesize-video"), CHAIN.index("group"))
+        self.assertLess(CHAIN.index("group"), CHAIN.index("synthesize-model"))
+
+    def test_keyframe_tags_are_not_foreign_keys_to_assets(self):
+        sql = Path("pipeline/sql/init_schema.sql").read_text(encoding="utf-8")
+        block = sql.split("CREATE TABLE IF NOT EXISTS tag_assignments", 1)[1].split("CREATE TABLE", 1)[0]
+        self.assertNotIn("REFERENCES assets", block)
+        self.assertIn("approval_state", sql)
+
+
 class ManifestAndSyncTests(unittest.TestCase):
     def test_manifest_omits_gps_and_keeps_detailed_tags(self):
         root = Path("pipeline/tests/_work_manifest")
@@ -240,7 +342,7 @@ class ManifestAndSyncTests(unittest.TestCase):
                 "latitude": 40.1,
                 "longitude": -74.2,
                 "alt_text": "Standing seam metal roof on a low commercial building.",
-                "workflow_state": "AUTO_ACCEPTED",
+                "approval_state": "AUTO_ACCEPTED",
             }
         )
         journal.assign_tag(temp_id, "standing seam metal roof", "preset")

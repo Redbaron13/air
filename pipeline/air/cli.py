@@ -150,8 +150,9 @@ CHAIN = (
     "describe",
     "reason",
     "validate",
-    "synthesize",
+    "synthesize-video",
     "group",
+    "synthesize-model",
     "id",
     "derive",
     "manifest",
@@ -179,8 +180,8 @@ def _run(root: Path, start: str, end: str) -> dict:
             results[stage] = ai.reason(root)
         elif stage == "validate":
             results[stage] = ai.validate(root)
-        elif stage == "synthesize":
-            results[stage] = {"video": ai.synthesize_video(root), "model": ai.synthesize_model(root)}
+        elif stage == "synthesize-video":
+            results[stage] = ai.synthesize_video(root)
         elif stage == "group":
             results[stage] = {
                 "location": group.group_location(root),
@@ -189,6 +190,8 @@ def _run(root: Path, start: str, end: str) -> dict:
                 "overlap": group.group_overlap(root),
                 "model": group.group_model(root),
             }
+        elif stage == "synthesize-model":
+            results[stage] = ai.synthesize_model(root)
         elif stage == "id":
             results[stage] = group.assign_ids(root)
         elif stage == "derive":
