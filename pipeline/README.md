@@ -78,13 +78,14 @@ python3 -m pipeline.air --library library <command>
 | `group before-after` | cross-date candidates | location and shot characteristic |
 | `group overlap` | visit overlap links | location and capture time |
 | `group model` | multi-view sets | location and at least two shot characteristics |
+| `case build` | one case study per location that has a before-and-after candidate or a model-view set | `group` already run |
 | `id` | compiled id, then a renamed copy | location confidence of at least 0.7 |
 | `derive` | four watermarked WebP files from the original | Pillow, compiled id, still image |
 | `rewatermark --watermark TEXT` | new WebP files from the same originals | Pillow |
 | `manifest` | `exports/website.manifest.json` | `APPROVED` or `AUTO_ACCEPTED`, alt text, WebP for stills |
 | `publish` | local `Output/` always; R2 only with credentials | R2 settings below |
 
-`run --from prep --to manifest` runs the chain from the first named stage through the second. The stage names are `prep`, `sync`, `exif`, `describe`, `reason`, `validate`, `synthesize-video`, `group`, `synthesize-model`, `id`, `derive`, `manifest`, `publish`. Video synthesis runs after each keyframe has its own description. Model synthesis runs after `group model` has written the view set.
+`run --from prep --to manifest` runs the chain from the first named stage through the second. The stage names are `prep`, `sync`, `exif`, `describe`, `reason`, `validate`, `synthesize-video`, `group`, `synthesize-model`, `case`, `id`, `derive`, `manifest`, `publish`. Video synthesis runs after each keyframe has its own description. Model synthesis runs after `group model` has written the view set. `case` then writes one case study for each location that has a before-and-after candidate or a model-view set. The case id is `CS-` plus the location id, so a later build updates that same row.
 
 Video and 3D files are ingested and tagged. `derive` does not invent a still for them. Their manifest entries use `media_kind` of `video` or `model3d`.
 
@@ -111,6 +112,16 @@ Describe, reason, and validate each receive that one still, keyframe, or model v
 ## Database
 
 `Database/tempID.db` is the working journal for every command above. `pipeline/sql/init_schema.sql` is the Postgres shape, including filename history, duplicates, keyframes, tag definitions, overrides, locations, before-and-after candidates, similar-shot groups, overlap links, model-view sets, relations, case studies, and copies. `sync` applies that file when a database URL is set. The offline tests do not open Postgres or Neon.
+
+## Local Postgres
+
+`docker-compose.yml` starts Postgres 16 and Redis 7 only. Postgres is published on `127.0.0.1:5432` and Redis on `127.0.0.1:6379`. A fresh volume runs `pipeline/sql/init_schema.sql`. This compose file does not run the review console.
+
+```sh
+docker compose -f docker-compose.yml up -d
+```
+
+`prep` still runs on the local library with no Docker and no network. `sync` is a no-op until `DATABASE_URL` is set. `sync --neon` is a no-op until `NEON_DATABASE_URL` is set. `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` in `.env.example` are the local defaults. The password there is a placeholder.
 
 ## What these tests run
 
